@@ -17,5 +17,4 @@ Thumbs.db
 
 .env
 
-temp_references/*
-!temp_references/.gitkeep
+temp_references/
