@@ -4,10 +4,17 @@ Trii Stocks Allocation Pipeline
 Runs the full pipeline:
   1. Stock pre-selection via technical signals (SMA, EMA, MACD)
   2. Future return estimation using a Transformer Neural Network
-  3. Sharpe Ratio maximising allocation (with min/max weight constraints)
-  4. CPPI strategy backtest
+       - Trained N_TRANSFORMER_RUNS times; predictions are averaged to reduce
+         the effect of random weight initialisation
+  3. Covariance matrix estimation using Ledoit-Wolf shrinkage
+       - Analytically optimal estimator for portfolios where n_stocks > n_observations
+       - DCC-GARCH is available as an alternative (see comments in the code)
+  4. Sharpe Ratio maximising allocation (with min/max weight constraints)
+       - Iteratively removes the lowest-weight stock until all weights meet MIN_WEIGHT
+  5. CPPI strategy backtest
+       - Applies a drawdown-based floor to manage downside risk
 
-Outputs a CSV with the final portfolio weights and COP allocations.
+Outputs a CSV with the final portfolio weights, forecasted prices, and COP allocations.
 """
 
 import sys
