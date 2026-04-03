@@ -19,3 +19,6 @@ Thumbs.db
 
 temp_references/*
 !temp_references/.gitkeep
+
+results/*
+!results/.gitkeep
