@@ -29,7 +29,22 @@ import numpy as np
 import datetime
 import yfinance as yf
 import risk_kit as rk
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PYTORCH GPU & TENSOR CORES SETUP
+# ─────────────────────────────────────────────────────────────────────────────
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if torch.cuda.is_available():
+    print(f"\n[GPU CONFIG] GPU detectada: {torch.cuda.get_device_name(0)}")
+    # Habilitar Tensor Cores (TF32) para matrices grandes
+    torch.set_float32_matmul_precision('high')
+    print("[GPU CONFIG] Tensor Cores activados (Aceleración TF32 + AMP).\n")
+else:
+    print("\n[GPU CONFIG] No se encontró GPU. Ejecutando en CPU.\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -167,68 +182,93 @@ X, Y = create_dataset(data, TIME_WINDOW)
 print(f"Training shapes — X: {X.shape}, Y: {Y.shape}")
 
 
-class PositionalEncoding(tf.keras.layers.Layer):
+class PositionalEncoding(nn.Module):
     def __init__(self, sequence_length, d_model):
         super().__init__()
-        self.sequence_length = sequence_length
-        self.d_model = d_model
-
-    def call(self, inputs):
-        positions = np.arange(self.sequence_length)[:, np.newaxis]
-        num_dims  = (self.d_model + 1) // 2
-        div_term  = np.exp(np.arange(0, num_dims) * (-np.log(10000.0) / self.d_model))
-        pos_enc   = np.zeros((self.sequence_length, self.d_model))
+        positions = np.arange(sequence_length)[:, np.newaxis]
+        num_dims  = (d_model + 1) // 2
+        div_term  = np.exp(np.arange(0, num_dims) * (-np.log(10000.0) / d_model))
+        pos_enc   = np.zeros((sequence_length, d_model))
         pos_enc[:, 0::2] = np.sin(positions * div_term)
-        pos_enc[:, 1::2] = np.cos(positions * div_term[:self.d_model // 2])
-        return inputs + tf.convert_to_tensor(pos_enc, dtype=tf.float32)
+        pos_enc[:, 1::2] = np.cos(positions * div_term[:d_model // 2])
+        self.register_buffer('pos_enc', torch.tensor(pos_enc, dtype=torch.float32).unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pos_enc
 
 
-def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0.1):
-    x = tf.keras.layers.MultiHeadAttention(
-        num_heads=num_heads, key_dim=head_size, dropout=dropout
-    )(inputs, inputs)
-    x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + inputs)
-    ff = tf.keras.layers.Dense(ff_dim, activation="relu")(x)
-    ff = tf.keras.layers.Dense(inputs.shape[-1])(ff)
-    x  = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x + ff)
-    return x
+class TransformerModel(nn.Module):
+    def __init__(self, input_shape, head_size=128, num_heads=8, ff_dim=512, num_blocks=6, dropout=0.1):
+        super().__init__()
+        seq_len, num_features = input_shape
+        # Proyectar variables al d_model múltiplo de attention heads
+        d_model = 128
+        
+        self.input_proj = nn.Linear(num_features, d_model)
+        self.pos_encoding = PositionalEncoding(seq_len, d_model)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=num_heads, 
+            dim_feedforward=ff_dim, 
+            dropout=dropout, 
+            batch_first=True,
+            norm_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
+        self.output_proj = nn.Linear(d_model, num_features)
 
-
-def build_transformer_model(input_shape, head_size=128, num_heads=8,
-                             ff_dim=512, num_blocks=6, dropout=0.1):
-    inputs = tf.keras.layers.Input(shape=input_shape)
-    x = PositionalEncoding(sequence_length=input_shape[0], d_model=input_shape[1])(inputs)
-    for _ in range(num_blocks):
-        x = transformer_encoder(x, head_size, num_heads, ff_dim, dropout)
-    x = tf.keras.layers.GlobalAveragePooling1D()(x)
-    outputs = tf.keras.layers.Dense(input_shape[1])(x)
-    model = tf.keras.Model(inputs, outputs)
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-        loss="mse",
-        metrics=["mae", tf.keras.metrics.RootMeanSquaredError]
-    )
-    return model
+    def forward(self, x):
+        x = self.input_proj(x)
+        x = self.pos_encoding(x)
+        x = self.transformer_encoder(x)
+        x = x.mean(dim=1)
+        x = self.output_proj(x)
+        return x
 
 
 # Prepare prediction input once — constant across runs
 data_preds = np.concatenate((data, np.expand_dims(np.zeros_like(data[-1]), axis=0)))
 X_pred, _  = create_dataset(data_preds, TIME_WINDOW)
 
-# Train N_TRANSFORMER_RUNS independent models and average their predictions
+# PyTorch Training Preparation
+X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
+Y_tensor = torch.tensor(Y, dtype=torch.float32).to(device)
+dataset = TensorDataset(X_tensor, Y_tensor)
+
 all_preds_runs = []
 for run in range(N_TRANSFORMER_RUNS):
     print(f"  Training run {run + 1}/{N_TRANSFORMER_RUNS}...")
-    model = build_transformer_model(input_shape=(TIME_WINDOW, X.shape[2]))
-    model.fit(X, Y, epochs=50, batch_size=32, verbose=0)
+    model = TransformerModel(input_shape=(TIME_WINDOW, X.shape[2])).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    criterion = nn.MSELoss()
+    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    
+    # Objecto para escalar gradientes y usar Precisión Mixta en Tensor Cores
+    scaler = torch.cuda.amp.GradScaler()
+    
+    model.train()
+    for target_epoch in range(50):
+        for batch_x, batch_y in dataloader:
+            optimizer.zero_grad()
+            # Activar Precisión Mixta (FP16 para mayor velocidad)
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                output = model(batch_x)
+                loss = criterion(output, batch_y)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-    run_preds   = []
-    pred_inputs = np.expand_dims(X_pred[-1], axis=0)
-    for _ in range(PERIODS_TO_FORECAST):
-        pred        = model.predict(pred_inputs, verbose=0)
-        run_preds.append(pred[0])
-        pred_inputs = np.concatenate((pred_inputs[0][1:], np.expand_dims(pred[0], axis=0)))
-        pred_inputs = np.expand_dims(pred_inputs, axis=0)
+    model.eval()
+    run_preds = []
+    pred_inputs = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        for _ in range(PERIODS_TO_FORECAST):
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                pred = model(pred_inputs)
+            run_preds.append(pred[0].cpu().numpy())
+            pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
 
     all_preds_runs.append(np.array(run_preds))
 

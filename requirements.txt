@@ -1,4 +1,4 @@
-﻿# Core Data Science and Numerical Computing
+# Core Data Science and Numerical Computing
 numpy>=1.26.0
 pandas>=2.2.3
 scipy>=1.13.1
@@ -11,8 +11,7 @@ arch>=7.2.0
 pmdarima>=2.0.4
 
 # Machine Learning and Deep Learning
-tensorflow>=2.19.0
-keras>=3.9.0
+# PyTorch replaces TensorFlow
 scikit-learn>=1.5.2
 torch>=2.4.1
 
@@ -44,8 +43,8 @@ tqdm>=4.67.1
 # openai>=1.60.2   # Uncomment if using OpenAI API
 
 # TensorFlow and Keras dependencies
-tensorboard>=2.19.0
-tensorboard-data-server>=0.7.2
+# Tensorboard removed as TF is not used
+# tensorboard-data-server removed
 # tensorflow-io-gcs-filesystem>=0.31.0
 h5py>=3.13.0
 protobuf>=5.29.4
