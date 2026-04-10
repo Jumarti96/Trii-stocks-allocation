@@ -5,6 +5,41 @@ This project implements a portfolio optimization pipeline for stocks available o
 
 ---
 
+## GPU Acceleration (Strongly Recommended)
+
+The Transformer Neural Network is the most computationally intensive step in the pipeline. **Running with a CUDA-compatible NVIDIA GPU is strongly recommended** — it can reduce training time by 10–30× compared to CPU.
+
+The pipeline automatically detects and uses the GPU if available. When a GPU is present, it also enables:
+- **TF32 precision** via Tensor Cores (free speed boost on RTX 30/40 series)
+- **FP16 mixed-precision (AMP)** during training and inference for maximum throughput
+
+### Install the GPU build of PyTorch
+
+By default, `pip install torch` installs the CPU-only build. To enable GPU acceleration, install the CUDA build instead:
+
+```bash
+# For CUDA 12.8 (recommended for RTX 30/40 series with recent drivers)
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+# Verify GPU is detected
+python -c "import torch; print(torch.cuda.get_device_name(0))"
+```
+
+> If you are unsure which CUDA version to use, run `nvidia-smi` and check the **CUDA Version** shown in the top-right corner. Any driver reporting CUDA 11.8 or higher supports the `cu128` build.
+
+### Verify GPU is in use
+
+At runtime the pipeline prints a confirmation line:
+
+```
+[GPU CONFIG] GPU detected: NVIDIA GeForce RTX 4090 Laptop GPU
+[GPU CONFIG] Tensor Cores enabled (TF32 + AMP acceleration).
+```
+
+If you see `Running on: cpu` instead, the CPU-only PyTorch build is installed — follow the install step above.
+
+---
+
 ## Running the Model
 
 There are two ways to run the pipeline depending on how much control you need.
@@ -25,10 +60,7 @@ Output is saved to `results/allocation_output.csv` and contains the following co
 | `Expected Annual Return` | Annualised return predicted by the Transformer NN |
 | `Current Price` | Last available market price |
 | `Forecasted Price (date)` | Price projected by the model over the forecast horizon |
-| `CPPI Risky Allocation (%)` | Fraction of capital directed to this stock by the CPPI strategy |
-| `Risky Investment (COP k)` | COP thousands allocated to this stock |
-
-The last row (`Safe Assets`) shows the portion of capital the CPPI strategy places in the risk-free asset.
+| `Investment (COP k)` | COP thousands allocated to this stock |
 
 ---
 
@@ -140,18 +172,18 @@ Trii Stocks allocation/
    # Activate — Windows
    venv\Scripts\activate
    ```
-   > **Alternative:** If you use [conda](https://docs.conda.io/), it handles binary dependencies like TensorFlow more reliably on some systems:
-   > ```bash
-   > conda create -n trii python=3.9
-   > conda activate trii
-   > ```
 
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. *(Optional)* To use DCC-GARCH covariance estimation:
+4. **Install the GPU build of PyTorch** (strongly recommended — see [GPU Acceleration](#gpu-acceleration-strongly-recommended) above):
+   ```bash
+   pip install torch --index-url https://download.pytorch.org/whl/cu128
+   ```
+
+5. *(Optional)* To use DCC-GARCH covariance estimation:
    ```bash
    pip install arch
    ```
@@ -160,6 +192,6 @@ Trii Stocks allocation/
 
 ## Dependencies
 
-Key packages: `pandas`, `numpy`, `scikit-learn`, `yfinance`, `tensorflow`, `statsmodels`, `matplotlib`, `seaborn`, `ipywidgets`
+Key packages: `pandas`, `numpy`, `scikit-learn`, `yfinance`, `torch`, `statsmodels`, `matplotlib`, `seaborn`, `ipywidgets`
 
 See `requirements.txt` for the full list.

@@ -11,10 +11,9 @@ Runs the full pipeline:
        - DCC-GARCH is available as an alternative (see comments in the code)
   4. Sharpe Ratio maximising allocation (with min/max weight constraints)
        - Iteratively removes the lowest-weight stock until all weights meet MIN_WEIGHT
-  5. CPPI strategy backtest
-       - Applies a drawdown-based floor to manage downside risk
 
 Outputs a CSV with the final portfolio weights, forecasted prices, and COP allocations.
+The full budget is deployed into the risky (equity) portfolio.
 """
 
 import sys
@@ -39,12 +38,11 @@ from torch.utils.data import TensorDataset, DataLoader
 # ─────────────────────────────────────────────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.cuda.is_available():
-    print(f"\n[GPU CONFIG] GPU detectada: {torch.cuda.get_device_name(0)}")
-    # Habilitar Tensor Cores (TF32) para matrices grandes
+    print(f"\n[GPU CONFIG] GPU detected: {torch.cuda.get_device_name(0)}")
     torch.set_float32_matmul_precision('high')
-    print("[GPU CONFIG] Tensor Cores activados (Aceleración TF32 + AMP).\n")
+    print("[GPU CONFIG] Tensor Cores enabled (TF32 + AMP acceleration).\n")
 else:
-    print("\n[GPU CONFIG] No se encontró GPU. Ejecutando en CPU.\n")
+    print("\n[GPU CONFIG] No GPU found. Running on CPU.\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -61,8 +59,6 @@ RF_RATE            = 0.11        # Risk-free rate (10-Y Colombian bond yield ≈
 MAX_WEIGHT         = 0.15        # Max portfolio weight per stock
 MIN_WEIGHT         = 0.05        # Min portfolio weight per stock
 INVESTMENT_COP     = 105_000_000 # Total capital available (COP)
-DRAWDOWN_FLOOR     = 0.20        # CPPI max drawdown floor
-CPPI_MULTIPLIER    = 5           # CPPI cushion multiplier
 N_TRANSFORMER_RUNS = 10         # Independent training runs; predictions are averaged
 OUTPUT_PATH        = os.path.join(os.path.dirname(__file__), 'results', 'allocation_output.csv')
 
@@ -346,70 +342,19 @@ print(chosen_allocation.sort_values('Weights', ascending=False).to_string())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 5 — BUILD ALLOCATED INDEX
-# ─────────────────────────────────────────────────────────────────────────────
-
-weights_series = chosen_allocation['Weights']
-
-allocated_index = (selected_stocks_rets[weights_series.index] + 1).cumprod() * weights_series
-allocated_index['index'] = allocated_index.sum(axis='columns')
-allocated_index.index = pd.to_datetime(allocated_index.index.str.split('/').str[0])
-
-# Prepend a starting row where the index equals 1
-first_period    = allocated_index.index[0]
-starting_period = first_period - pd.offsets.Week(weekday=6)
-start_row       = pd.DataFrame(index=[starting_period], columns=allocated_index.columns)
-start_row.iloc[:, :-1] = 1 * weights_series
-start_row['index']     = 1
-allocated_index = pd.concat([start_row, allocated_index])
-
-allocated_index_returns = (allocated_index / allocated_index.shift(1) - 1).dropna()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 6 — CPPI STRATEGY BACKTEST & FINAL ALLOCATION
-# ─────────────────────────────────────────────────────────────────────────────
-
-print("\n=== Step 5: Running CPPI Strategy ===")
-
-btr = rk.run_cppi(
-    allocated_index_returns,
-    m=CPPI_MULTIPLIER,
-    start=1000,
-    riskfree_rate=RF_RATE,
-    drawdown=DRAWDOWN_FLOOR
-)
-
-risky_pct = btr['Risky Allocation']['index'].iloc[-1]
-safe_pct  = 1 - risky_pct
-
-risky_cop_per_stock = risky_pct * INVESTMENT_COP * weights_series
-safe_cop_total      = safe_pct  * INVESTMENT_COP
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # OUTPUT CSV
 # ─────────────────────────────────────────────────────────────────────────────
 
+weights_series = chosen_allocation['Weights']
+cop_per_stock  = (weights_series * INVESTMENT_COP / 1_000).round(2)
+
 output = pd.DataFrame({
-    'Portfolio Weight':            weights_series.round(4),
-    'Expected Annual Return':      expected_returns[weights_series.index].round(4),
-    'Current Price':               current_prices[weights_series.index].round(4),
-    f'Forecasted Price ({future_dates[-1]})': forecasted_prices[weights_series.index].round(4),
-    'CPPI Risky Allocation (%)':   round(risky_pct, 4),
-    'Risky Investment (COP k)':    (risky_cop_per_stock / 1_000).round(2),
-})
-
-safe_row = pd.DataFrame({
-    'Portfolio Weight':          [None],
-    'Expected Annual Return':    [None],
-    'Current Price':             [None],
-    f'Forecasted Price ({future_dates[-1]})': [None],
-    'CPPI Risky Allocation (%)': [round(safe_pct, 4)],
-    'Risky Investment (COP k)':  [round(safe_cop_total / 1_000, 2)],
-}, index=['Safe Assets'])
-
-output = pd.concat([output.sort_values('Portfolio Weight', ascending=False), safe_row])
+    'Portfolio Weight':                        weights_series.round(4),
+    'Expected Annual Return':                  expected_returns[weights_series.index].round(4),
+    'Current Price':                           current_prices[weights_series.index].round(4),
+    f'Forecasted Price ({future_dates[-1]})':  forecasted_prices[weights_series.index].round(4),
+    'Investment (COP k)':                      cop_per_stock,
+}).sort_values('Portfolio Weight', ascending=False)
 
 os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 output.to_csv(OUTPUT_PATH)
@@ -418,5 +363,4 @@ print(f"\nAllocation saved to: {OUTPUT_PATH}")
 print(f"\n{'─'*70}")
 print(output.to_string())
 print(f"{'─'*70}")
-print(f"\nTotal CPPI risky allocation:  {risky_pct*100:.1f}%  →  COP {risky_cop_per_stock.sum()/1e6:.2f}M")
-print(f"Total CPPI safe  allocation:  {safe_pct*100:.1f}%  →  COP {safe_cop_total/1e6:.2f}M")
+print(f"\nTotal invested:  COP {cop_per_stock.sum()/1_000:.2f}M  across {len(weights_series)} stocks")

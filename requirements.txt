@@ -13,7 +13,7 @@ pmdarima>=2.0.4
 # Machine Learning and Deep Learning
 # PyTorch replaces TensorFlow
 scikit-learn>=1.5.2
-torch>=2.4.1
+torch>=2.8.0+cu128
 
 # Financial Data
 yfinance>=0.2.65
