@@ -7,13 +7,12 @@ scipy>=1.13.1
 statsmodels>=0.14.4
 mgarch>=0.3.0
 mvgarch>=1.0.1
-arch>=7.2.0
 pmdarima>=2.0.4
 
 # Machine Learning and Deep Learning
 # PyTorch replaces TensorFlow
 scikit-learn>=1.5.2
-torch>=2.8.0+cu128
+torch>=2.0.0
 
 # Financial Data
 yfinance>=0.2.65

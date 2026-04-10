@@ -1,7 +1,7 @@
 # Trii Stocks Allocation: Portfolio Optimization Project
 
 ## Overview
-This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, filters stocks using technical signals, forecasts future returns using a Transformer Neural Network, estimates a covariance matrix using Ledoit-Wolf shrinkage, and finds the allocation that maximizes the Sharpe ratio. A CPPI (Constant Proportion Portfolio Insurance) strategy is then applied to manage drawdown risk.
+This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, filters stocks using technical signals, forecasts future returns using a Transformer Neural Network, estimates a covariance matrix using Ledoit-Wolf shrinkage, and finds the allocation that maximizes the Sharpe ratio. The full capital budget is deployed into the selected equity positions.
 
 ---
 
@@ -15,28 +15,24 @@ The pipeline automatically detects and uses the GPU if available. When a GPU is 
 
 ### Install the GPU build of PyTorch
 
-By default, `pip install torch` installs the CPU-only build. To enable GPU acceleration, install the CUDA build instead:
+By default, `pip install torch` installs the CPU-only build. To enable GPU acceleration, visit the [PyTorch installation page](https://pytorch.org/get-started/locally/), select your OS, package manager, and CUDA version, and run the generated command. Example for CUDA 12.8:
 
 ```bash
-# For CUDA 12.8 (recommended for RTX 30/40 series with recent drivers)
 pip install torch --index-url https://download.pytorch.org/whl/cu128
-
-# Verify GPU is detected
-python -c "import torch; print(torch.cuda.get_device_name(0))"
 ```
 
-> If you are unsure which CUDA version to use, run `nvidia-smi` and check the **CUDA Version** shown in the top-right corner. Any driver reporting CUDA 11.8 or higher supports the `cu128` build.
+> To find your CUDA version, run `nvidia-smi` and check the **CUDA Version** shown in the top-right corner.
 
 ### Verify GPU is in use
 
 At runtime the pipeline prints a confirmation line:
 
 ```
-[GPU CONFIG] GPU detected: NVIDIA GeForce RTX 4090 Laptop GPU
+[GPU CONFIG] GPU detected: <your GPU name>
 [GPU CONFIG] Tensor Cores enabled (TF32 + AMP acceleration).
 ```
 
-If you see `Running on: cpu` instead, the CPU-only PyTorch build is installed — follow the install step above.
+If you see `No GPU found. Running on CPU.` instead, the CPU-only PyTorch build is installed — follow the install step above.
 
 ---
 
@@ -56,7 +52,7 @@ Output is saved to `results/allocation_output.csv` and contains the following co
 
 | Column | Description |
 |---|---|
-| `Portfolio Weight` | Optimal weight in the risky portfolio |
+| `Portfolio Weight` | Optimal weight in the portfolio |
 | `Expected Annual Return` | Annualised return predicted by the Transformer NN |
 | `Current Price` | Last available market price |
 | `Forecasted Price (date)` | Price projected by the model over the forecast horizon |
@@ -103,8 +99,6 @@ RF_RATE             = 0.11   # Risk-free rate (e.g. 10-Y Colombian bond yield)
 MAX_WEIGHT          = 0.15   # Maximum portfolio weight per stock
 MIN_WEIGHT          = 0.05   # Minimum portfolio weight per stock
 INVESTMENT_COP      = 105_000_000  # Total capital to allocate (COP)
-DRAWDOWN_FLOOR      = 0.20   # CPPI maximum drawdown threshold
-CPPI_MULTIPLIER     = 5      # CPPI cushion multiplier
 ```
 
 The most commonly adjusted parameters before each run are:
@@ -125,7 +119,7 @@ Notebook 2 and the main program both offer two methods for estimating the covari
 | Method | Status | Description |
 |---|---|---|
 | **Ledoit-Wolf Shrinkage** | **Enabled** | Analytically optimal shrinkage estimator. Significantly reduces estimation error compared to raw sample covariance, especially when the number of stocks exceeds the number of observations. |
-| **DCC-GARCH** | Commented out | Captures time-varying volatility clustering and dynamic cross-asset correlations. Requires `pip install arch`. To enable in the notebook, comment out the Ledoit-Wolf cell and uncomment the DCC-GARCH block. |
+| **DCC-GARCH** | Commented out | Captures time-varying volatility clustering and dynamic cross-asset correlations. To enable, install `arch` (`pip install arch`), comment out the Ledoit-Wolf cell, and uncomment the DCC-GARCH block. |
 
 ---
 
@@ -157,7 +151,7 @@ Trii Stocks allocation/
 
 1. Clone the repository and navigate to the project folder:
    ```bash
-   git clone https://github.com/jumarti96/Trii-stocks-allocation.git
+   git clone https://github.com/Jumarti96/Trii-stocks-allocation.git
    cd "Trii Stocks allocation"
    ```
 
@@ -178,10 +172,7 @@ Trii Stocks allocation/
    pip install -r requirements.txt
    ```
 
-4. **Install the GPU build of PyTorch** (strongly recommended — see [GPU Acceleration](#gpu-acceleration-strongly-recommended) above):
-   ```bash
-   pip install torch --index-url https://download.pytorch.org/whl/cu128
-   ```
+4. *(Recommended)* Install the GPU build of PyTorch for faster training — see [GPU Acceleration](#gpu-acceleration-strongly-recommended) above.
 
 5. *(Optional)* To use DCC-GARCH covariance estimation:
    ```bash
