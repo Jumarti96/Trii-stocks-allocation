@@ -74,8 +74,8 @@ print("\n=== Step 1: Downloading stock data ===")
 col_stock_list_path    = os.path.join(BASE_DIR, 'stock_tickers', 'colombia_stocks_trii.csv')
 global_stock_list_path = os.path.join(BASE_DIR, 'stock_tickers', 'global_stocks_trii.csv')
 
-ticker_list_col  = list(pd.read_csv(col_stock_list_path,    header=None)[0].dropna().astype(str).str.strip())
-ticker_list_glob = list(pd.read_csv(global_stock_list_path, header=None)[0].dropna().astype(str).str.strip())
+ticker_list_col  = list(pd.read_csv(col_stock_list_path,    header=None)[0])
+ticker_list_glob = list(pd.read_csv(global_stock_list_path, header=None)[0])
 
 end_date   = datetime.date.today()
 start_date = end_date - datetime.timedelta(days=DAYS_OF_DATA)
@@ -124,7 +124,7 @@ for ticker in stocks.columns:
     sig = rk.technical_indicators(
         stocks[ticker],
         indicators=['SMA', 'EMA', 'MACD', 'PRC'],
-        time_window=MA_TERMS,
+        ma_terms=10,
         macd_params=[12, 26, 9],
         return_df=True,
         plot=False,
@@ -137,11 +137,12 @@ for ticker in stocks.columns:
 
 signals = pd.concat(signals, axis=0)
 
-# Keep stocks where at least 2 out of 3 signals are positive
+# Keep stocks where at least 3 out of 4 signals are positive
 signals_filtered = signals[
     np.int64(signals['MACD Signal']) +
     np.int64(signals[f'SMA{MA_TERMS} Signal']) +
-    np.int64(signals[f'EMA{MA_TERMS} Signal']) >= 2
+    np.int64(signals[f'EMA{MA_TERMS} Signal']) +
+    np.int64(signals[f'PRC Signal']) >= 3
 ]
 
 selected_stocks_rets   = rets[signals_filtered.index]
@@ -163,7 +164,7 @@ print(f"Selected {len(selected_stocks)} stocks: {list(selected_stocks)}")
 
 print("\n=== Step 3: Training Transformer Neural Network ===")
 
-data = rets.values  # shape: (n_periods, n_stocks)
+data = selected_stocks_rets.values  # shape: (n_periods, n_selected_stocks)
 
 
 def create_dataset(data, time_window=1):
@@ -276,7 +277,18 @@ future_dates = pd.date_range(
     start=last_date + pd.Timedelta(days=7),
     periods=PERIODS_TO_FORECAST, freq='W-SUN'
 ).to_period('W')
-preds_df = pd.DataFrame(preds, columns=rets.columns, index=future_dates)
+preds_df = pd.DataFrame(preds, columns=selected_stocks_rets.columns, index=future_dates)
+
+# Winsorise predicted weekly returns at the 1st–99th percentile of historical returns.
+# Neural-network predictions can occasionally extrapolate far outside the training
+# distribution; even a modestly wrong weekly figure compounds into an absurd annualised
+# return (e.g. +8 %/week → +6 800 000 %/year). Clipping at historical percentiles
+# removes those extremes before they propagate through the compounding and annualisation
+# steps, without discarding the relative signal across stocks.
+lower_w = np.percentile(selected_stocks_rets.values, 1)
+upper_w = np.percentile(selected_stocks_rets.values, 99)
+preds_df = preds_df.clip(lower=lower_w, upper=upper_w)
+print(f"Predictions winsorised to [{lower_w:.4f}, {upper_w:.4f}] (1st–99th pct of historical weekly returns).")
 
 # Forecasted price at end of horizon: compound the predicted returns on the last known price
 current_prices    = stocks.iloc[-1]                          # last available price per stock
@@ -293,11 +305,11 @@ expected_annualized_rets = {
 }
 expected_returns = pd.Series(expected_annualized_rets)
 
-# Ledoit-Wolf shrinkage covariance (3 years of weekly data)
+# Ledoit-Wolf shrinkage covariance
 # Analytically optimal shrinkage estimator — reduces estimation error vs. raw
 # sample covariance, especially effective when n_stocks > n_observations.
 from sklearn.covariance import LedoitWolf
-ret_sample = rets[selected_stocks].iloc[-PERIODS_PER_YEAR * 3:]
+ret_sample = rets[selected_stocks]
 covmat = pd.DataFrame(
     LedoitWolf().fit(ret_sample).covariance_,
     index=selected_stocks, columns=selected_stocks
@@ -325,7 +337,7 @@ optimal_allocation = (
 # Batch elimination: drop ALL stocks whose CUMULATIVE weight (ascending) is below MIN_WEIGHT.
 # Stocks are sorted by weight ascending; we accumulate and cut where the running total < MIN_WEIGHT.
 iteration = 0
-while len(optimal_allocation) > 2:
+while optimal_allocation['Weights'].sum() >= .9999:
     iteration += 1
 
     # Cumulative sum of weights (already sorted ascending)
@@ -352,7 +364,7 @@ while len(optimal_allocation) > 2:
         covmat=covmat.loc[optimal_allocation.index, optimal_allocation.index],
         max_weight=MAX_WEIGHT,
         periods_per_year=PERIODS_PER_YEAR,
-        debug=True
+        debug=False
     )
     optimal_allocation = (
         pd.DataFrame(w, index=optimal_allocation.index, columns=['Weights'])

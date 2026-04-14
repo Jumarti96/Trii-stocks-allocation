@@ -450,7 +450,7 @@ def msr(riskfree_rate, **kwargs):
 
     results = minimize(neg_sharpe_ratio, init_guess,
                        args = (riskfree_rate, returns, covmat), method = 'SLSQP',
-                       jac = neg_sharpe_gradient,
+                       # jac = neg_sharpe_gradient,  # DISABLED
                        options = {'disp': False},
                        constraints = (weights_sum_to_1),
                        bounds=bounds
@@ -514,7 +514,7 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
     results = minimize(neg_sharpe_ratio, init_guess,
                        args = (riskfree_rate, returns, covmat),
                        method = 'SLSQP',
-                       # jac = neg_sharpe_gradient,  # DISABLED: causes numerical instability when returns are not on a ~0-2 scale
+                       # jac = neg_sharpe_gradient,  # DISABLED
                        # [1] disp: print summary on completion   [2] iprint: print each iteration
                        options = {'disp': debug, 'iprint': 2 if debug else -1},
                        callback = optimizer_callback if debug else None,
@@ -1481,28 +1481,28 @@ def plot_by_woe(data, x, y, rotation_of_x_axis_labels=0):
 """
 ********** TECHNICAL INDICATORS **********
 """
-def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO', 'PRC'], time_window=10, macd_params=[12, 26, 9], so_params=[14, 3], plot=True, return_df=True, periods_to_plot=0, signal_tolerance=1):
+def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO', 'PRC'], ma_terms=10, macd_params=[12, 26, 9], so_params=[14, 3], plot=True, return_df=True, periods_to_plot=0, signal_tolerance=1):
     """
     Function that calculates and plots technical indicators included in the <indicators> list object for the given series.\n
     <series> must be a pandas series.\n
-    <time_window> indicates the size of the time window for each of the indicators.\n
+    <ma_terms> indicates the size of the time window for each of the indicators.\n
     <periods_to_plot> can limit the number of periods plotted by the given number.\n
     <indicators> list object can include any of the following indicators:\n
     <signal_tolerance> is a multiplier to the indicator value to determine the signal threshold.\n
     -SMA: Simple Moving Average\n
     -EMA: Exponential Moving Average\n
     -MACD: Moving Average Convergence Divergence\n
-    -SO: Stochastic Oscilator
-    -PRC: Most recent price
+    -SO: Stochastic Oscilator\n
+    -PRC: Average price over the most recent 20% of observations relative to 10% of the series maximum price
     """
-    time_window = [time_window] if type(time_window) != list else time_window
+    ma_terms = [ma_terms] if type(ma_terms) != list else ma_terms
     indicators_list = [series]
     signals = []
     n_extra_plots = 0
     
     # Computation of Simple Moving Averages
     if 'SMA' in indicators:
-        for i in time_window:
+        for i in ma_terms:
             SMA = series.rolling(i).mean()
             SMA.name = 'SMA'+str(i)
             indicators_list.append(SMA)
@@ -1513,7 +1513,7 @@ def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO', 'PRC'],
 
     # Computation of Exponential Moving Averages
     if 'EMA' in indicators:
-        for i in time_window:
+        for i in ma_terms:
             EMA = series.ewm(span=i, adjust=False).mean()
             EMA.name = 'EMA'+str(i)
             indicators_list.append(EMA)
