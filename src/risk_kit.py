@@ -430,8 +430,27 @@ def msr(riskfree_rate, **kwargs):
         ret = portfolio_return(weights, returns)
         vol = portfolio_vol(weights, covmat)
         return -(ret - riskfree_rate)/vol
+
+    def neg_sharpe_gradient(weights, riskfree_rate, returns, covmat):
+        """
+        Calculates the analytical gradient explicitly to massively speed up SciPy's SLSQP.
+        """
+        ret = portfolio_return(weights, returns)
+        vol = portfolio_vol(weights, covmat)
+        
+        R = returns.values if hasattr(returns, 'values') else np.array(returns)
+        C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
+        
+        # Quotient Rule derivative w.r.t weights (w):
+        # u = ret - rf, u' = R
+        # v = vol, v' = (C @ w) / vol
+        dv = (C @ weights) / vol
+        grad = -(R * vol - (ret - riskfree_rate) * dv) / (vol**2)
+        return grad
+
     results = minimize(neg_sharpe_ratio, init_guess,
                        args = (riskfree_rate, returns, covmat), method = 'SLSQP',
+                       jac = neg_sharpe_gradient,
                        options = {'disp': False},
                        constraints = (weights_sum_to_1),
                        bounds=bounds
@@ -448,7 +467,9 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
     returns: an array of length 2 with returns for 2 assets\n
     covmat: a covariance matrix of shape 2 by 2 for 2 assets\n
     periods_per_year: an integer for the number of periods per year for returns annualization\n
+    debug: if True, prints optimizer progress and convergence info (default: False)\n
     """
+    debug = kwargs.pop('debug', False)
     returns, covmat = returns_covmat_validation(**kwargs)
     n = returns.shape[0]
     init_guess = np.repeat(1/n, n)
@@ -464,13 +485,51 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
         ret = portfolio_return(weights, returns)
         vol = portfolio_vol(weights, covmat)
         return -(ret - riskfree_rate)/vol
+
+    #TODO: Pendiente a revisar 
+    def neg_sharpe_gradient(weights, riskfree_rate, returns, covmat):
+        """
+        Calculates the analytical gradient explicitly to massively speed up SciPy's SLSQP.
+        """
+        ret = portfolio_return(weights, returns)
+        vol = portfolio_vol(weights, covmat)
+        
+        R = returns.values if hasattr(returns, 'values') else np.array(returns)
+        C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
+        
+        # Quotient Rule derivative w.r.t weights (w):
+        dv = (C @ weights) / vol
+        grad = -(R * vol - (ret - riskfree_rate) * dv) / (vol**2)
+        return grad
+
+    # [3] Callback: called after every iteration when debug=True
+    iteration_counter = [0]
+    def optimizer_callback(weights):
+        iteration_counter[0] += 1
+        ret = portfolio_return(weights, returns)
+        vol = portfolio_vol(weights, covmat)
+        sharpe = (ret - riskfree_rate) / vol
+        print(f"  [iter {iteration_counter[0]:>3}] Sharpe: {sharpe:.6f} | Ret: {ret:.4f} | Vol: {vol:.4f}")
+
     results = minimize(neg_sharpe_ratio, init_guess,
                        args = (riskfree_rate, returns, covmat),
                        method = 'SLSQP',
-                       options = {'disp': False},
+                       # jac = neg_sharpe_gradient,  # DISABLED: causes numerical instability when returns are not on a ~0-2 scale
+                       # [1] disp: print summary on completion   [2] iprint: print each iteration
+                       options = {'disp': debug, 'iprint': 2 if debug else -1},
+                       callback = optimizer_callback if debug else None,
                        constraints = (weights_sum_to_1),
                        bounds=bounds
                        )
+
+    # [4] Inspect results object for silent failures
+    if debug:
+        if results.success:
+            print(f"   Optimizer converged in {results.nit} iterations ({results.nfev} function evaluations).")
+        else:
+            print(f"    Optimizer did NOT converge: {results.message}")
+            print(f"      Iterations used: {results.nit} | Function evaluations: {results.nfev}")
+
     return results.x
 
 def gmv(covmat):
@@ -1422,7 +1481,7 @@ def plot_by_woe(data, x, y, rotation_of_x_axis_labels=0):
 """
 ********** TECHNICAL INDICATORS **********
 """
-def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO'], time_window=10, macd_params=[12, 26, 9], so_params=[14, 3], plot=True, return_df=True, periods_to_plot=0, signal_tolerance=1):
+def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO', 'PRC'], time_window=10, macd_params=[12, 26, 9], so_params=[14, 3], plot=True, return_df=True, periods_to_plot=0, signal_tolerance=1):
     """
     Function that calculates and plots technical indicators included in the <indicators> list object for the given series.\n
     <series> must be a pandas series.\n
@@ -1434,6 +1493,7 @@ def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO'], time_w
     -EMA: Exponential Moving Average\n
     -MACD: Moving Average Convergence Divergence\n
     -SO: Stochastic Oscilator
+    -PRC: Most recent price
     """
     time_window = [time_window] if type(time_window) != list else time_window
     indicators_list = [series]
@@ -1488,6 +1548,15 @@ def technical_indicators(series, indicators=['SMA', 'EMA', 'MACD', 'SO'], time_w
         SO_signals = pct_K > pct_D*signal_tolerance
         SO_signals.name = 'Stochastic Oscillator Signal'
         signals.append(SO_signals)
+    
+    if 'PRC' in indicators:
+        n_periods = len(series)
+        last_20_pct_count = max(1, int(n_periods * 0.2))
+        avg_last_20_pct = series.tail(last_20_pct_count).mean()
+        max_value_threshold = 0.1 * series.max()
+        
+        PRC_signals = pd.Series(avg_last_20_pct > max_value_threshold, index=series.index, name='PRC Signal')
+        signals.append(PRC_signals)
 
     technical_indicators_df = pd.concat(indicators_list, axis=1)
     signals_df = pd.concat(signals, axis=1)

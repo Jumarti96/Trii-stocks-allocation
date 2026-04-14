@@ -50,7 +50,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────────
 
 PERIODS_PER_YEAR   = 54          # 54 for weekly data
-INTERVAL           = '1wk'
+INTERVAL           = '1wk'       # 1wk: 1 week, 1mth: 1 month; 1yr: 1 year
 DAYS_OF_DATA       = 365 * 10
 MA_TERMS           = 10          # Moving-average window (weeks)
 PERIODS_TO_FORECAST = 4          # Periods ahead predicted by the Transformer
@@ -59,7 +59,7 @@ RF_RATE            = 0.11        # Risk-free rate (10-Y Colombian bond yield ≈
 MAX_WEIGHT         = 0.15        # Max portfolio weight per stock
 MIN_WEIGHT         = 0.05        # Min portfolio weight per stock
 INVESTMENT_COP     = 105_000_000 # Total capital available (COP)
-N_TRANSFORMER_RUNS = 10         # Independent training runs; predictions are averaged
+N_TRANSFORMER_RUNS = 50         # Independent training runs; predictions are averaged
 OUTPUT_PATH        = os.path.join(os.path.dirname(__file__), 'results', 'allocation_output.csv')
 
 BASE_DIR           = os.path.dirname(__file__)
@@ -74,8 +74,8 @@ print("\n=== Step 1: Downloading stock data ===")
 col_stock_list_path    = os.path.join(BASE_DIR, 'stock_tickers', 'colombia_stocks_trii.csv')
 global_stock_list_path = os.path.join(BASE_DIR, 'stock_tickers', 'global_stocks_trii.csv')
 
-ticker_list_col  = list(pd.read_csv(col_stock_list_path,    header=None)[0])
-ticker_list_glob = list(pd.read_csv(global_stock_list_path, header=None)[0])
+ticker_list_col  = list(pd.read_csv(col_stock_list_path,    header=None)[0].dropna().astype(str).str.strip())
+ticker_list_glob = list(pd.read_csv(global_stock_list_path, header=None)[0].dropna().astype(str).str.strip())
 
 end_date   = datetime.date.today()
 start_date = end_date - datetime.timedelta(days=DAYS_OF_DATA)
@@ -123,7 +123,7 @@ signals = []
 for ticker in stocks.columns:
     sig = rk.technical_indicators(
         stocks[ticker],
-        indicators=['SMA', 'EMA', 'MACD'],
+        indicators=['SMA', 'EMA', 'MACD', 'PRC'],
         time_window=MA_TERMS,
         macd_params=[12, 26, 9],
         return_df=True,
@@ -314,22 +314,45 @@ returns = expected_returns[selected_stocks]
 
 initial_weights = rk.msr_tuned(
     riskfree_rate=RF_RATE, returns=returns, covmat=covmat,
-    max_weight=MAX_WEIGHT, periods_per_year=PERIODS_PER_YEAR
+    max_weight=MAX_WEIGHT, periods_per_year=PERIODS_PER_YEAR,
+    debug=False
 )
 optimal_allocation = (
     pd.DataFrame(initial_weights, index=returns.index, columns=['Weights'])
     .sort_values(by='Weights')
 )
 
-# Iteratively remove the lowest-weight stock until all weights meet the minimum
-while optimal_allocation['Weights'].min() < MIN_WEIGHT and len(optimal_allocation) > 2:
-    optimal_allocation = optimal_allocation.iloc[1:]
+# Batch elimination: drop ALL stocks whose CUMULATIVE weight (ascending) is below MIN_WEIGHT.
+# Stocks are sorted by weight ascending; we accumulate and cut where the running total < MIN_WEIGHT.
+iteration = 0
+while len(optimal_allocation) > 2:
+    iteration += 1
+
+    # Cumulative sum of weights (already sorted ascending)
+    cum_weights = optimal_allocation['Weights'].cumsum()
+
+    # A stock is dropped if its cumulative weight is still below the threshold
+    failing_mask = cum_weights < MIN_WEIGHT
+
+    if not failing_mask.any():
+        break  # all cumulative weights meet the threshold — done
+
+    n_dropped = failing_mask.sum()
+    print(f"  [pass {iteration}] Dropping {n_dropped} stock(s) with cumulative weight < {MIN_WEIGHT:.0%}: "
+          f"{list(optimal_allocation[failing_mask].index)}")
+
+    # Drop the entire sub-threshold batch at once
+    optimal_allocation = optimal_allocation[~failing_mask]
+    if len(optimal_allocation) <= 2:
+        break
+
     w = rk.msr_tuned(
         riskfree_rate=RF_RATE,
         returns=returns[optimal_allocation.index],
         covmat=covmat.loc[optimal_allocation.index, optimal_allocation.index],
         max_weight=MAX_WEIGHT,
-        periods_per_year=PERIODS_PER_YEAR
+        periods_per_year=PERIODS_PER_YEAR,
+        debug=True
     )
     optimal_allocation = (
         pd.DataFrame(w, index=optimal_allocation.index, columns=['Weights'])
