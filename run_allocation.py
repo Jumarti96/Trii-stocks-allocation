@@ -18,6 +18,7 @@ The full budget is deployed into the risky (equity) portfolio.
 
 import sys
 import os
+import glob
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 import warnings
@@ -49,13 +50,18 @@ else:
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-PERIODS_PER_YEAR   = 54          # 54 for weekly data
-INTERVAL           = '1wk'       # 1wk: 1 week, 1mth: 1 month; 1yr: 1 year
+PERIODS_PER_YEAR   = 54          # 52 for weekly data, 12 for monthly
+INTERVAL           = '1wk'       # '1wk' for weekly, '1mo' for monthly
 DAYS_OF_DATA       = 365 * 10
-MA_TERMS           = 10          # Moving-average window (weeks)
+MA_TERMS           = 10          # Moving-average window (periods)
 PERIODS_TO_FORECAST = 4          # Periods ahead predicted by the Transformer
-TIME_WINDOW        = 54          # Transformer input sequence length (weeks)
 RF_RATE            = 0.11        # Risk-free rate (10-Y Colombian bond yield ≈ 11.2 %)
+
+# ─── Derived from INTERVAL (do not edit) ─────────────────────────────────────
+PERIOD_FREQ  = 'W' if INTERVAL == '1wk' else 'M'
+DATE_OFFSET  = pd.Timedelta(days=7) if INTERVAL == '1wk' else pd.DateOffset(months=1)
+FUTURE_FREQ  = 'W-SUN' if INTERVAL == '1wk' else 'MS'
+TIME_WINDOW  = PERIODS_PER_YEAR   # Transformer input: one full year of history
 MAX_WEIGHT         = 0.15        # Max portfolio weight per stock
 MIN_WEIGHT         = 0.05        # Min portfolio weight per stock
 INVESTMENT_COP     = 105_000_000 # Total capital available (COP)
@@ -71,34 +77,30 @@ BASE_DIR           = os.path.dirname(__file__)
 
 print("\n=== Step 1: Downloading stock data ===")
 
-col_stock_list_path    = os.path.join(BASE_DIR, 'stock_tickers', 'colombia_stocks_trii.csv')
-global_stock_list_path = os.path.join(BASE_DIR, 'stock_tickers', 'global_stocks_trii.csv')
-
-ticker_list_col  = list(pd.read_csv(col_stock_list_path,    header=None)[0])
-ticker_list_glob = list(pd.read_csv(global_stock_list_path, header=None)[0])
+csv_files   = glob.glob(os.path.join(BASE_DIR, 'stock_tickers', '*.csv'))
+ticker_list = list({
+    ticker
+    for csv_file in csv_files
+    for ticker in pd.read_csv(csv_file, header=None)[0].tolist()
+})
+print(f"Loaded {len(ticker_list)} unique tickers from {len(csv_files)} CSV files.")
 
 end_date   = datetime.date.today()
 start_date = end_date - datetime.timedelta(days=DAYS_OF_DATA)
 
-col_stocks_raw    = yf.download(ticker_list_col,  interval=INTERVAL, start=start_date, end=end_date, auto_adjust=True)['Close']
-global_stocks_raw = yf.download(ticker_list_glob, interval=INTERVAL, start=start_date, end=end_date, auto_adjust=True)['Close']
-
-col_stocks_raw.index    = col_stocks_raw.index.to_period(freq='W')
-global_stocks_raw.index = global_stocks_raw.index.to_period(freq='W')
+stocks_raw = yf.download(ticker_list, interval=INTERVAL, start=start_date, end=end_date, auto_adjust=True)['Close']
+stocks_raw.index = stocks_raw.index.to_period(freq=PERIOD_FREQ)
 
 
 def combine_duplicate_rows(df):
-    """Keep first non-null value when YFinance returns duplicate rows for the latest week."""
+    """Keep first non-null value when YFinance returns duplicate rows for the latest period."""
     def first_non_null(series):
         non_null = series.dropna()
         return non_null.iloc[0] if len(non_null) > 0 else np.nan
     return df.groupby(df.index).agg(first_non_null)
 
 
-col_stocks_raw    = combine_duplicate_rows(col_stocks_raw)
-global_stocks_raw = combine_duplicate_rows(global_stocks_raw)
-
-stocks = pd.concat([col_stocks_raw, global_stocks_raw], axis='columns').sort_index()
+stocks = combine_duplicate_rows(stocks_raw).sort_index()
 
 # Drop tickers with more than 15 % missing data
 stocks_not_missing = stocks.columns[stocks.isna().sum() < stocks.shape[0] * 0.15]
@@ -148,11 +150,12 @@ signals_filtered = signals[
 selected_stocks_rets   = rets[signals_filtered.index]
 selected_stocks_stocks = stocks[signals_filtered.index]
 
-# Convert PeriodIndex to end-of-week date strings
-selected_stocks_rets.index   = selected_stocks_rets.index.astype('str').str.split('/').str[1]
-selected_stocks_stocks.index = selected_stocks_stocks.index.astype('str').str.split('/').str[1]
-rets.index   = rets.index.astype('str').str.split('/').str[1]
-stocks.index = stocks.index.astype('str').str.split('/').str[1]
+# Convert PeriodIndex to end-of-period date strings.
+# Weekly periods format as "yyyy-mm-dd/yyyy-mm-dd"; monthly as "yyyy-mm". str[-1] handles both.
+selected_stocks_rets.index   = selected_stocks_rets.index.astype('str').str.split('/').str[-1]
+selected_stocks_stocks.index = selected_stocks_stocks.index.astype('str').str.split('/').str[-1]
+rets.index   = rets.index.astype('str').str.split('/').str[-1]
+stocks.index = stocks.index.astype('str').str.split('/').str[-1]
 
 selected_stocks = selected_stocks_rets.columns
 print(f"Selected {len(selected_stocks)} stocks: {list(selected_stocks)}")
@@ -274,9 +277,9 @@ print(f"Predictions averaged across {N_TRANSFORMER_RUNS} runs.")
 
 last_date    = pd.to_datetime(rets.index).max()
 future_dates = pd.date_range(
-    start=last_date + pd.Timedelta(days=7),
-    periods=PERIODS_TO_FORECAST, freq='W-SUN'
-).to_period('W')
+    start=last_date + DATE_OFFSET,
+    periods=PERIODS_TO_FORECAST, freq=FUTURE_FREQ
+).to_period(PERIOD_FREQ)
 preds_df = pd.DataFrame(preds, columns=selected_stocks_rets.columns, index=future_dates)
 
 # Winsorise predicted weekly returns at the 1st–99th percentile of historical returns.
@@ -383,6 +386,17 @@ print(chosen_allocation.sort_values('Weights', ascending=False).to_string())
 weights_series = chosen_allocation['Weights']
 cop_per_stock  = (weights_series * INVESTMENT_COP / 1_000).round(2)
 
+# ── Portfolio index from historical returns ───────────────────────────────────
+allocated_index = (rets[weights_series.index] + 1).cumprod() * weights_series
+allocated_index['PORTFOLIO'] = allocated_index.sum(axis=1)
+allocated_index_rets = (allocated_index / allocated_index.shift(1) - 1).dropna()
+
+portfolio_stats = rk.summary_stats(
+    allocated_index_rets[['PORTFOLIO']],
+    periods_per_year=PERIODS_PER_YEAR,
+    riskfree_rate=RF_RATE
+).loc['PORTFOLIO']
+
 output = pd.DataFrame({
     'Portfolio Weight':                        weights_series.round(4),
     'Expected Annual Return':                  expected_returns[weights_series.index].round(4),
@@ -390,6 +404,20 @@ output = pd.DataFrame({
     f'Forecasted Price ({future_dates[-1]})':  forecasted_prices[weights_series.index].round(4),
     'Investment (COP k)':                      cop_per_stock,
 }).sort_values('Portfolio Weight', ascending=False)
+
+portfolio_forecasted = (
+    cop_per_stock * (1 + expected_returns[weights_series.index]) ** (PERIODS_TO_FORECAST / PERIODS_PER_YEAR)
+).sum().round(2)
+
+portfolio_row = pd.DataFrame({
+    'Portfolio Weight':                        [1],
+    'Expected Annual Return':                  [round(portfolio_stats['Annualized Return'], 4)],
+    'Current Price':                           [cop_per_stock.sum()],
+    f'Forecasted Price ({future_dates[-1]})':  [portfolio_forecasted],
+    'Investment (COP k)':                      [cop_per_stock.sum()],
+}, index=['PORTFOLIO INDEX'])
+
+output = pd.concat([output, portfolio_row])
 
 os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 output.to_csv(OUTPUT_PATH)
