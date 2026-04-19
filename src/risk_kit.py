@@ -478,6 +478,11 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
         'type': 'eq',
         'fun': lambda weights: np.sum(weights) - 1
     }
+
+    # Pre-convert once to avoid repeated pandas overhead inside the optimizer loop
+    R = returns.values if hasattr(returns, 'values') else np.array(returns)
+    C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
+
     def neg_sharpe_ratio(weights, riskfree_rate, returns, covmat):
         """
         Calculates the negative of the Sharpe-Ratio for a given combination of returns, covariances and weights.
@@ -486,17 +491,13 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
         vol = portfolio_vol(weights, covmat)
         return -(ret - riskfree_rate)/vol
 
-    #TODO: Pendiente a revisar 
     def neg_sharpe_gradient(weights, riskfree_rate, returns, covmat):
         """
         Calculates the analytical gradient explicitly to massively speed up SciPy's SLSQP.
         """
         ret = portfolio_return(weights, returns)
         vol = portfolio_vol(weights, covmat)
-        
-        R = returns.values if hasattr(returns, 'values') else np.array(returns)
-        C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
-        
+
         # Quotient Rule derivative w.r.t weights (w):
         dv = (C @ weights) / vol
         grad = -(R * vol - (ret - riskfree_rate) * dv) / (vol**2)
@@ -512,13 +513,12 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
         print(f"  [iter {iteration_counter[0]:>3}] Sharpe: {sharpe:.6f} | Ret: {ret:.4f} | Vol: {vol:.4f}")
 
     results = minimize(neg_sharpe_ratio, init_guess,
-                       args = (riskfree_rate, returns, covmat),
-                       method = 'SLSQP',
-                       # jac = neg_sharpe_gradient,  # DISABLED
-                       # [1] disp: print summary on completion   [2] iprint: print each iteration
-                       options = {'disp': debug, 'iprint': 2 if debug else -1},
-                       callback = optimizer_callback if debug else None,
-                       constraints = (weights_sum_to_1),
+                       args=(riskfree_rate, returns, covmat),
+                       method='SLSQP',
+                       jac=neg_sharpe_gradient,
+                       options={'disp': debug, 'iprint': 2 if debug else -1},
+                       callback=optimizer_callback if debug else None,
+                       constraints=(weights_sum_to_1),
                        bounds=bounds
                        )
 
