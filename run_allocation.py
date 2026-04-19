@@ -19,6 +19,8 @@ The full budget is deployed into the risky (equity) portfolio.
 import sys
 import os
 import glob
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 import warnings
@@ -66,76 +68,129 @@ MAX_WEIGHT         = 0.15        # Max portfolio weight per stock
 MIN_WEIGHT         = 0.05        # Min portfolio weight per stock
 INVESTMENT_COP     = 105_000_000 # Total capital available (COP)
 N_TRANSFORMER_RUNS = 50         # Independent training runs; predictions are averaged
+PRE_FILTER_TOP_N   = 100        # Top N stocks by expected return fed into the optimizer
 OUTPUT_PATH        = os.path.join(os.path.dirname(__file__), 'results', 'allocation_output.csv')
-
+BATCH_SIZE         = 500
 BASE_DIR           = os.path.dirname(__file__)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 1 — DOWNLOAD & PRE-PROCESS STOCK DATA
+# STEP 1 — DOWNLOAD & PRE-PROCESS STOCK DATA (in batches of BATCH_SIZE)
 # ─────────────────────────────────────────────────────────────────────────────
 
-print("\n=== Step 1: Downloading stock data ===")
+t0_step1 = time.time()
+print(f"\n=== Step 1: Downloading stock data (batches of {BATCH_SIZE}) ===")
 
 csv_files   = glob.glob(os.path.join(BASE_DIR, 'stock_tickers', '*.csv'))
 ticker_list = list({
-    ticker
+    ticker.strip()
     for csv_file in csv_files
-    for ticker in pd.read_csv(csv_file, header=None)[0].tolist()
+    for ticker in pd.read_csv(csv_file, header=None)[0].astype(str).tolist()
+    if ticker.strip() and ticker.strip().lower() != 'nan'
 })
 print(f"Loaded {len(ticker_list)} unique tickers from {len(csv_files)} CSV files.")
 
-end_date   = datetime.date.today()
-start_date = end_date - datetime.timedelta(days=DAYS_OF_DATA)
-
-stocks_raw = yf.download(ticker_list, interval=INTERVAL, start=start_date, end=end_date, auto_adjust=True)['Close']
-stocks_raw.index = stocks_raw.index.to_period(freq=PERIOD_FREQ)
+end_date       = datetime.date.today()
+start_date     = end_date - datetime.timedelta(days=DAYS_OF_DATA)
+analysis_end   = str(datetime.date.today())
+analysis_start = str(datetime.date.today() - datetime.timedelta(days=DAYS_OF_DATA))
 
 
 def combine_duplicate_rows(df):
     """Keep first non-null value when YFinance returns duplicate rows for the latest period."""
-    def first_non_null(series):
-        non_null = series.dropna()
-        return non_null.iloc[0] if len(non_null) > 0 else np.nan
-    return df.groupby(df.index).agg(first_non_null)
+    return df.groupby(df.index).first()
 
 
-stocks = combine_duplicate_rows(stocks_raw).sort_index()
+n_batches = (len(ticker_list) + BATCH_SIZE - 1) // BATCH_SIZE
+batches   = [
+    [t for t in ticker_list[i * BATCH_SIZE:(i + 1) * BATCH_SIZE] if t]
+    for i in range(n_batches)
+]
 
-# Drop tickers with more than 15 % missing data
-stocks_not_missing = stocks.columns[stocks.isna().sum() < stocks.shape[0] * 0.15]
-stocks = stocks[stocks_not_missing].bfill()
 
-rets = stocks.pct_change().iloc[1:]
+def _download_batch(batch_idx, batch):
+    print(f"\n  [Batch {batch_idx + 1}/{n_batches}] Downloading {len(batch)} tickers...")
+    try:
+        batch_raw = yf.download(
+            batch, interval=INTERVAL, start=start_date, end=end_date,
+            auto_adjust=True, progress=True, threads=True, timeout=10
+        )['Close']
+    except Exception as e:
+        print(f"  Batch {batch_idx + 1} download failed: {e}")
+        return None
 
-# Trim to the analysis window
-analysis_end   = str(datetime.date.today())
-analysis_start = str(datetime.date.today() - datetime.timedelta(days=DAYS_OF_DATA))
-rets   = rets.loc[analysis_start:analysis_end]
+    if batch_raw.empty:
+        print(f"  Batch {batch_idx + 1}: no data returned.")
+        return None
+
+    if isinstance(batch_raw, pd.Series):
+        batch_raw = batch_raw.to_frame()
+
+    batch_raw.index = batch_raw.index.to_period(freq=PERIOD_FREQ)
+    batch_stocks = combine_duplicate_rows(batch_raw).sort_index()
+
+    # Drop tickers with more than 15 % missing data
+    valid_cols   = batch_stocks.columns[batch_stocks.isna().sum() < batch_stocks.shape[0] * 0.15]
+    batch_stocks = batch_stocks[valid_cols].bfill()
+
+    if batch_stocks.empty:
+        print(f"  Batch {batch_idx + 1}: all tickers dropped (missing data).")
+        return None
+
+    print(f"  [Batch {batch_idx + 1}/{n_batches}] {len(batch_stocks.columns)} tickers valid.")
+    return batch_stocks
+
+
+stocks_batches = []
+with ThreadPoolExecutor(max_workers=3) as executor:
+    futures = {executor.submit(_download_batch, i, b): i for i, b in enumerate(batches) if b}
+    for future in as_completed(futures):
+        result = future.result()
+        if result is not None:
+            stocks_batches.append(result)
+
+if not stocks_batches:
+    raise RuntimeError("No data downloaded across all batches.")
+
+# Combine all batches and trim to analysis window
+stocks = pd.concat(stocks_batches, axis=1)
+rets   = stocks.pct_change().iloc[1:]
+
+# Convert PeriodIndex to end-of-period date strings.
+# Weekly periods format as "yyyy-mm-dd/yyyy-mm-dd"; monthly as "yyyy-mm". str[-1] handles both.
+stocks.index = stocks.index.astype('str').str.split('/').str[-1]
+rets.index   = rets.index.astype('str').str.split('/').str[-1]
 stocks = stocks.loc[analysis_start:analysis_end]
+rets   = rets.loc[analysis_start:analysis_end]
+
+print(f"Downloaded {len(stocks.columns)} valid tickers after missing-data filter.")
+print(f"  Step 1 completed in {time.time() - t0_step1:.1f}s")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — TECHNICAL SIGNAL FILTERING
 # ─────────────────────────────────────────────────────────────────────────────
 
+t0_step2 = time.time()
 print("\n=== Step 2: Computing technical signals ===")
 
 signals = []
 for ticker in stocks.columns:
-    sig = rk.technical_indicators(
-        stocks[ticker],
-        indicators=['SMA', 'EMA', 'MACD', 'PRC'],
-        ma_terms=10,
-        macd_params=[12, 26, 9],
-        return_df=True,
-        plot=False,
-        signal_tolerance=0.975
-    ).iloc[-1]
-    sig_df = pd.DataFrame(sig).T
-    sig_df.index = [ticker]
-    sig_df.rename(columns={ticker: 'Price'}, inplace=True)
-    signals.append(sig_df)
+    try:
+        sig = rk.technical_indicators(
+            stocks[ticker],
+            indicators=['SMA', 'EMA', 'MACD', 'PRC'],
+            ma_terms=10,
+            macd_params=[12, 26, 9],
+            return_df=True,
+            plot=False,
+            signal_tolerance=0.975
+        ).iloc[-1]
+        sig_df = pd.DataFrame(sig).T
+        sig_df.index = [ticker]
+        sig_df.rename(columns={ticker: 'Price'}, inplace=True)
+        signals.append(sig_df)
+    except Exception:
+        pass
 
 signals = pd.concat(signals, axis=0)
 
@@ -150,21 +205,16 @@ signals_filtered = signals[
 selected_stocks_rets   = rets[signals_filtered.index]
 selected_stocks_stocks = stocks[signals_filtered.index]
 
-# Convert PeriodIndex to end-of-period date strings.
-# Weekly periods format as "yyyy-mm-dd/yyyy-mm-dd"; monthly as "yyyy-mm". str[-1] handles both.
-selected_stocks_rets.index   = selected_stocks_rets.index.astype('str').str.split('/').str[-1]
-selected_stocks_stocks.index = selected_stocks_stocks.index.astype('str').str.split('/').str[-1]
-rets.index   = rets.index.astype('str').str.split('/').str[-1]
-stocks.index = stocks.index.astype('str').str.split('/').str[-1]
-
 selected_stocks = selected_stocks_rets.columns
 print(f"Selected {len(selected_stocks)} stocks: {list(selected_stocks)}")
+print(f"  Step 2 completed in {time.time() - t0_step2:.1f}s")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 3 — TRANSFORMER NEURAL NETWORK: FUTURE RETURN ESTIMATION
 # ─────────────────────────────────────────────────────────────────────────────
 
+t0_step3 = time.time()
 print("\n=== Step 3: Training Transformer Neural Network ===")
 
 data = selected_stocks_rets.values  # shape: (n_periods, n_selected_stocks)
@@ -319,13 +369,25 @@ covmat = pd.DataFrame(
 )
 
 
+print(f"  Step 3 completed in {time.time() - t0_step3:.1f}s")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 4 — SHARPE RATIO MAXIMISING ALLOCATION
 # ─────────────────────────────────────────────────────────────────────────────
 
+t0_step4 = time.time()
 print("\n=== Step 4: Sharpe Ratio Maximising Allocation ===")
 
 returns = expected_returns[selected_stocks]
+
+# Pre-filter: keep only the top PRE_FILTER_TOP_N stocks by expected return.
+# With 2000+ stocks the optimizer is intractable; the final portfolio concentrates
+# on the highest-return names anyway, so this pre-selection has minimal impact on results.
+if len(returns) > PRE_FILTER_TOP_N:
+    top_n = returns.nlargest(PRE_FILTER_TOP_N).index
+    returns = returns[top_n]
+    covmat  = covmat.loc[top_n, top_n]
+    print(f"  Pre-filter: {len(selected_stocks)} → {PRE_FILTER_TOP_N} stocks (top {PRE_FILTER_TOP_N} by expected return)")
 
 initial_weights = rk.msr_tuned(
     riskfree_rate=RF_RATE, returns=returns, covmat=covmat,
@@ -377,6 +439,7 @@ while optimal_allocation['Weights'].sum() >= .9999:
 chosen_allocation = optimal_allocation
 print(f"Final portfolio: {len(chosen_allocation)} stocks")
 print(chosen_allocation.sort_values('Weights', ascending=False).to_string())
+print(f"  Step 4 completed in {time.time() - t0_step4:.1f}s")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
