@@ -65,7 +65,7 @@ def main():
 
     # Drop tickers with more than 15% missing data, then forward-fill remaining gaps
     stocks_not_missing = stocks.columns[stocks.isna().sum() < stocks.shape[0] * 0.15]
-    stocks = stocks[stocks_not_missing].ffill()
+    stocks = stocks[stocks_not_missing].ffill().bfill()
 
     rets = stocks.pct_change().iloc[1:]
 
