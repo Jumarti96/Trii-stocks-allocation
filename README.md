@@ -1,4 +1,4 @@
-# Trii Stocks Allocation: Portfolio Optimization Project
+# Stock Portfolio Allocation: Portfolio Optimization Project
 
 ## Overview
 This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, filters stocks using technical signals, forecasts future returns using a Transformer Neural Network, estimates a covariance matrix using Ledoit-Wolf shrinkage, and finds the allocation that maximizes the Sharpe ratio. The full capital budget is deployed into the selected equity positions.
@@ -28,39 +28,109 @@ pip install torch --index-url https://download.pytorch.org/whl/cu128
 At runtime the pipeline prints a confirmation line:
 
 ```
-[GPU CONFIG] GPU detected: <your GPU name>
-[GPU CONFIG] Tensor Cores enabled (TF32 + AMP acceleration).
+[GPU] <your GPU name> detected.
+[GPU] Tensor Cores enabled (TF32 + AMP acceleration).
 ```
 
-If you see `No GPU found. Running on CPU.` instead, the CPU-only PyTorch build is installed — follow the install step above.
+If you see `No GPU found — running on CPU.` instead, the CPU-only PyTorch build is installed — follow the install step above.
+
+---
+
+## Configuration
+
+All pipeline parameters live in **`params.yaml`** at the project root. Edit this file before running any option below — the orchestrator, individual pipeline scripts, and notebooks all read from it.
+
+```yaml
+# Timing & data
+periods_per_year: 54          # 52 for weekly, 12 for monthly
+interval: "1wk"              # "1wk" or "1mo"
+days_of_data: 3650
+
+# Technical signal filtering
+ma_terms: 10
+signal_min_count: 3           # Minimum positive signals (out of 4) to keep a stock
+
+# Transformer model
+periods_to_forecast: 4
+n_transformer_runs: 50        # Increase for stability; decrease to run faster
+
+# Portfolio optimisation
+rf_rate: 0.11                 # 10-Y Colombian bond yield
+max_weight: 0.15
+min_weight: 0.05
+
+# Output
+investment_cop: 115000000     # Total capital (COP)
+output_path: "results/allocation_output.csv"
+```
+
+The most commonly adjusted parameters before each run are:
+- `investment_cop` — update to your current available capital
+- `rf_rate` — update to the current 10-year Colombian bond yield
+- `n_transformer_runs` — increase for more stable predictions; decrease to run faster
 
 ---
 
 ## Running the Model
 
-There are two ways to run the pipeline depending on how much control you need.
+There are three ways to run the pipeline.
 
-### Option 1 — Main program (recommended for regular use)
+---
 
-Runs the full pipeline end-to-end and saves a CSV with the final portfolio weights and COP allocations.
+### Option 1 — Modular Pipeline via Orchestrator (recommended)
+
+The pipeline is broken into five sequential steps, each producing intermediate files in `data/` that can be inspected between runs.
+
+```bash
+python orchestrator.py
+```
+
+The orchestrator is **resumable by default**: if a step's output files already exist it skips that step. This means you can re-run without repeating the GPU-intensive Transformer step.
+
+**Useful flags:**
+
+| Command | Effect |
+|---|---|
+| `python orchestrator.py` | Run all steps unconditionally |
+| `python orchestrator.py --resume` | Run all steps, skip any already cached |
+| `python orchestrator.py --steps 4 5` | Run only steps 4 and 5 |
+| `python orchestrator.py --from 3` | Run from step 3 to the end |
+| `python orchestrator.py --steps 3 --resume` | Run step 3 only if not cached |
+| `python orchestrator.py --list` | Show step status and exit |
+
+**Running a single step standalone** (without the orchestrator):
+
+```bash
+python pipeline/04_allocate.py
+```
+
+Each script in `pipeline/` is fully self-contained and can be run independently, as long as its input files in `data/` already exist.
+
+**Pipeline steps and intermediate files:**
+
+| Step | Script | Outputs to `data/` |
+|---|---|---|
+| 1 | `01_download.py` | `01_prices.csv`, `01_returns.csv` |
+| 2 | `02_filter.py` | `02_selected_returns.csv`, `02_selected_prices.csv`, `02_signals.csv` |
+| 3 | `03_predict.py` | `03_expected_returns.csv`, `03_covmat.csv`, `03_predictions.csv`, `03_metadata.json` |
+| 4 | `04_allocate.py` | `04_weights.csv` |
+| 5 | `05_report.py` | `results/allocation_output.csv` |
+
+---
+
+### Option 2 — Single-script (legacy)
+
+Runs the full pipeline end-to-end in a single process. No intermediate files are written.
 
 ```bash
 python run_allocation.py
 ```
 
-Output is saved to `results/allocation_output.csv` and contains the following columns for each selected stock:
-
-| Column | Description |
-|---|---|
-| `Portfolio Weight` | Optimal weight in the portfolio |
-| `Expected Annual Return` | Annualised return predicted by the Transformer NN |
-| `Current Price` | Last available market price |
-| `Forecasted Price (date)` | Price projected by the model over the forecast horizon |
-| `Investment (COP k)` | COP thousands allocated to this stock |
+> Parameters for this option are still hardcoded at the top of `run_allocation.py`. For new runs, Option 1 is recommended.
 
 ---
 
-### Option 2 — Jupyter Notebooks (recommended when you want more control or want to see charts)
+### Option 3 — Jupyter Notebooks (recommended for exploration and charts)
 
 With your environment active, open Jupyter from the project root:
 
@@ -72,54 +142,39 @@ Run the four notebooks in order:
 
 | # | Notebook | What it does |
 |---|---|---|
-| 1 | `1. Trii Catalog Stock Pre-selection.ipynb` | Downloads prices, computes SMA/EMA/MACD signals, filters stocks |
+| 1 | `1. Trii Catalog Stock Pre-selection.ipynb` | Downloads prices, computes SMA/EMA/MACD/PRC signals, filters stocks |
 | 2 | `2. Future returns and Covariance matrix estimation.ipynb` | Trains Transformer NN to forecast returns; estimates covariance |
 | 3 | `3. Trii Catalog Sharpe-Ratio Maximizing Allocation.ipynb` | Maximises Sharpe ratio with weight constraints; plots efficient frontier |
 | 4 | `4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb` | Backtests CPPI strategy; runs Brownian motion simulation |
 
-Each notebook saves intermediate CSV files to `temp_references/` which are picked up by the next notebook.
+Each notebook loads core parameters from `params.yaml` automatically. Intermediate CSV files are saved to `temp_references/` and picked up by the next notebook.
 
 ---
 
-## Adjustable Parameters
+## Output
 
-### Main program (`run_allocation.py`)
+`results/allocation_output.csv` contains the following columns for each selected stock:
 
-All key parameters are defined at the top of the file under the `CONFIGURATION` block:
+| Column | Description |
+|---|---|
+| `Portfolio Weight` | Optimal weight in the portfolio |
+| `Expected Annual Return` | Annualised return predicted by the Transformer NN |
+| `Current Price` | Last available market price |
+| `Forecasted Price (date)` | Price projected by the model over the forecast horizon |
+| `Investment (COP k)` | COP thousands allocated to this stock |
 
-```python
-PERIODS_PER_YEAR    = 54     # 54 = weekly, 252 = daily, 12 = monthly
-INTERVAL            = '1wk'  # yfinance download interval: '1d', '1wk', '1mo'
-DAYS_OF_DATA        = 3650   # Historical data window (in days)
-MA_TERMS            = 10     # Moving-average window for technical signals (weeks)
-PERIODS_TO_FORECAST = 4      # Weeks ahead predicted by the Transformer
-TIME_WINDOW         = 54     # Transformer input sequence length (weeks)
-N_TRANSFORMER_RUNS  = 10     # Independent training runs; predictions are averaged
-RF_RATE             = 0.11   # Risk-free rate (e.g. 10-Y Colombian bond yield)
-MAX_WEIGHT          = 0.15   # Maximum portfolio weight per stock
-MIN_WEIGHT          = 0.05   # Minimum portfolio weight per stock
-INVESTMENT_COP      = 105_000_000  # Total capital to allocate (COP)
-```
-
-The most commonly adjusted parameters before each run are:
-- `INVESTMENT_COP` — update to your current available capital
-- `RF_RATE` — update to the current 10-year Colombian bond yield
-- `N_TRANSFORMER_RUNS` — increase for more stable predictions, decrease to run faster
-
-### Notebooks
-
-The same parameters appear at the top of each notebook as plain variables (e.g. `periods_per_year`, `rf_rate`, `MA_terms`). Edit them directly in the relevant cell before running.
+A `PORTFOLIO INDEX` summary row is appended at the bottom with aggregate statistics.
 
 ---
 
 ## Covariance Estimation Methods
 
-Notebook 2 and the main program both offer two methods for estimating the covariance matrix. **Ledoit-Wolf is enabled by default.**
+Notebook 2 and the pipeline both offer two methods for estimating the covariance matrix. **Ledoit-Wolf is enabled by default.**
 
 | Method | Status | Description |
 |---|---|---|
 | **Ledoit-Wolf Shrinkage** | **Enabled** | Analytically optimal shrinkage estimator. Significantly reduces estimation error compared to raw sample covariance, especially when the number of stocks exceeds the number of observations. |
-| **DCC-GARCH** | Commented out | Captures time-varying volatility clustering and dynamic cross-asset correlations. To enable, install `arch` (`pip install arch`), comment out the Ledoit-Wolf cell, and uncomment the DCC-GARCH block. |
+| **DCC-GARCH** | Commented out | Captures time-varying volatility clustering and dynamic cross-asset correlations. To enable, install `arch` (`pip install arch`), comment out the Ledoit-Wolf block, and uncomment the DCC-GARCH block. |
 
 ---
 
@@ -127,23 +182,51 @@ Notebook 2 and the main program both offer two methods for estimating the covari
 
 ```
 Trii Stocks allocation/
-├── run_allocation.py           # Main program — runs full pipeline, outputs CSV
+├── params.yaml                 # Single source of truth for all parameters
+├── orchestrator.py             # Pipeline runner — run all steps or a subset
+├── run_allocation.py           # Legacy single-script pipeline
+│
+├── pipeline/                   # One script per pipeline step
+│   ├── config.py               # Shared config loader (reads params.yaml)
+│   ├── 01_download.py          # Download & preprocess stock data
+│   ├── 02_filter.py            # Technical signal filtering
+│   ├── 03_predict.py           # Transformer prediction + covariance
+│   ├── 04_allocate.py          # Sharpe ratio optimisation
+│   └── 05_report.py            # Final report assembly
+│
+├── data/                       # Intermediate files between pipeline steps
+│   ├── 01_prices.csv
+│   ├── 01_returns.csv
+│   ├── 02_selected_returns.csv
+│   ├── 02_selected_prices.csv
+│   ├── 02_signals.csv
+│   ├── 03_expected_returns.csv
+│   ├── 03_covmat.csv
+│   ├── 03_predictions.csv
+│   ├── 03_metadata.json
+│   └── 04_weights.csv
+│
 ├── results/
-│   └── allocation_output.csv  # Output: final weights and COP allocations
+│   └── allocation_output.csv   # Final allocation output
+│
 ├── Notebooks/
 │   ├── 1. Trii Catalog Stock Pre-selection.ipynb
 │   ├── 2. Future returns and Covariance matrix estimation.ipynb
 │   ├── 3. Trii Catalog Sharpe-Ratio Maximizing Allocation.ipynb
 │   └── 4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb
+│
 ├── src/
-│   └── risk_kit.py             # Core module: financial stats, optimization, simulation
+│   └── risk_kit.py             # Core module: financial stats, optimisation, simulation
+│
 ├── stock_tickers/
 │   ├── colombia_stocks_trii.csv
 │   └── global_stocks_trii.csv
+│
 ├── temp_references/            # Intermediate CSVs shared between notebooks
-├── experimental_notebooks/     # Alternative modeling experiments (not required)
-└── requirements.txt
+└── experimental_notebooks/     # Alternative modelling experiments (not required)
 ```
+
+> `data/` and `temp_references/` are excluded from version control (`.gitignore`). Only `.gitkeep` files are tracked to preserve the directory structure.
 
 ---
 
@@ -183,6 +266,6 @@ Trii Stocks allocation/
 
 ## Dependencies
 
-Key packages: `pandas`, `numpy`, `scikit-learn`, `yfinance`, `torch`, `statsmodels`, `matplotlib`, `seaborn`, `ipywidgets`
+Key packages: `pandas`, `numpy`, `scikit-learn`, `yfinance`, `torch`, `statsmodels`, `matplotlib`, `seaborn`, `ipywidgets`, `PyYAML`
 
 See `requirements.txt` for the full list.

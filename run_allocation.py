@@ -1,5 +1,5 @@
 """
-Trii Stocks Allocation Pipeline
+Stock Allocation Pipeline
 ================================
 Runs the full pipeline:
   1. Stock pre-selection via technical signals (SMA, EMA, MACD)
@@ -64,7 +64,7 @@ FUTURE_FREQ  = 'W-SUN' if INTERVAL == '1wk' else 'MS'
 TIME_WINDOW  = PERIODS_PER_YEAR   # Transformer input: one full year of history
 MAX_WEIGHT         = 0.15        # Max portfolio weight per stock
 MIN_WEIGHT         = 0.05        # Min portfolio weight per stock
-INVESTMENT_COP     = 105_000_000 # Total capital available (COP)
+INVESTMENT_COP     = 115_000_000 # Total capital available (COP)
 N_TRANSFORMER_RUNS = 50         # Independent training runs; predictions are averaged
 OUTPUT_PATH        = os.path.join(os.path.dirname(__file__), 'results', 'allocation_output.csv')
 
