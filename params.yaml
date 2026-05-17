@@ -1,0 +1,26 @@
+# Stock Allocation Pipeline - Configuration
+# Edit values here. Derived values (period_freq, date_offset, future_freq,
+# time_window) are computed automatically by pipeline/config.py - do not add them.
+
+# Data and timing
+periods_per_year: 54          # 52 for weekly data, 12 for monthly
+interval: "1wk"              # "1wk" for weekly, "1mo" for monthly
+days_of_data: 3650            # Historical window to download (days)
+
+# Technical signal filtering (Step 2)
+ma_terms: 10                  # Moving-average window (periods)
+signal_min_count: 3           # Minimum positive signals (out of 4) to keep a stock
+
+# Transformer model (Step 3)
+periods_to_forecast: 4        # Periods ahead to predict
+n_transformer_runs: 50        # Independent training runs; predictions are averaged
+time_window: null             # Input sequence length; null means derived as periods_per_year
+
+# Portfolio optimisation (Step 4)
+rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
+max_weight: 0.15              # Maximum portfolio weight per stock
+min_weight: 0.05              # Minimum portfolio weight per stock
+
+# Output (Step 5)
+investment_cop: 115000000     # Total capital available (COP)
+output_path: "results/allocation_output.csv"

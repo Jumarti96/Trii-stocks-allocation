@@ -22,3 +22,6 @@ temp_references/*
 
 results/*
 !results/.gitkeep
+
+data/*
+!data/.gitkeep
