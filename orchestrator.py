@@ -24,7 +24,8 @@ from pathlib import Path
 
 _PIPELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline')
 sys.path.insert(0, _PIPELINE_DIR)
-from config import PATHS, BASE_DIR  # noqa: E402 - path insert must come first
+from config import load_config, PATHS, BASE_DIR  # noqa: E402 - path insert must come first
+load_config()  # populates PATHS['05_report'] from params.yaml before STEPS is built
 
 STEPS = {
     1: {

@@ -37,8 +37,9 @@ from sklearn.covariance import LedoitWolf
 from config import load_config, PATHS
 
 # GPU setup
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.cuda.is_available():
+device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+use_amp = torch.cuda.is_available()
+if use_amp:
     print(f"\n[GPU] {torch.cuda.get_device_name(0)} detected.")
     torch.set_float32_matmul_precision('high')
     print("[GPU] Tensor Cores enabled (TF32 + AMP acceleration).\n")
@@ -129,18 +130,24 @@ def main():
         optimizer  = optim.Adam(model.parameters(), lr=1e-4)
         criterion  = nn.MSELoss()
         dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-        scaler     = torch.cuda.amp.GradScaler()
+        scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
         model.train()
         for _ in range(50):
             for batch_x, batch_y in dataloader:
                 optimizer.zero_grad()
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                if use_amp:
+                    with torch.cuda.amp.autocast(dtype=torch.float16):
+                        output = model(batch_x)
+                        loss   = criterion(output, batch_y)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
                     output = model(batch_x)
                     loss   = criterion(output, batch_y)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                    loss.backward()
+                    optimizer.step()
 
         model.eval()
         run_preds   = []
@@ -148,7 +155,10 @@ def main():
 
         with torch.no_grad():
             for _ in range(periods_to_forecast):
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                if use_amp:
+                    with torch.cuda.amp.autocast(dtype=torch.float16):
+                        pred = model(pred_inputs)
+                else:
                     pred = model(pred_inputs)
                 run_preds.append(pred[0].cpu().numpy())
                 pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)

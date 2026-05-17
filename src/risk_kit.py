@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 import scipy.stats as stats
@@ -522,7 +523,8 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
                        bounds=bounds
                        )
 
-    # [4] Inspect results object for silent failures
+    if not results.success:
+        warnings.warn(f"msr_tuned optimizer did not converge: {results.message}")
     if debug:
         if results.success:
             print(f"   Optimizer converged in {results.nit} iterations ({results.nfev} function evaluations).")

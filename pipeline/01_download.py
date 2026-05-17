@@ -57,13 +57,15 @@ def main():
         end=end_date,
         auto_adjust=True
     )['Close']
+    if isinstance(stocks_raw, pd.Series):
+        stocks_raw = stocks_raw.to_frame()
     stocks_raw.index = stocks_raw.index.to_period(freq=cfg['period_freq'])
 
     stocks = combine_duplicate_rows(stocks_raw).sort_index()
 
-    # Drop tickers with more than 15% missing data, then back-fill remaining gaps
+    # Drop tickers with more than 15% missing data, then forward-fill remaining gaps
     stocks_not_missing = stocks.columns[stocks.isna().sum() < stocks.shape[0] * 0.15]
-    stocks = stocks[stocks_not_missing].bfill()
+    stocks = stocks[stocks_not_missing].ffill()
 
     rets = stocks.pct_change().iloc[1:]
 

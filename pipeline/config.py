@@ -29,7 +29,7 @@ PATHS = {
     '03_metadata':         os.path.join(DATA_DIR, '03_metadata.json'),
     # Step 4 outputs
     '04_weights':          os.path.join(DATA_DIR, '04_weights.csv'),
-    # Step 5 outputs
+    # Step 5 output — set dynamically by load_config() from cfg['output_path']
     '05_report':           os.path.join(BASE_DIR, 'results', 'allocation_output.csv'),
 }
 
@@ -47,5 +47,7 @@ def load_config(config_path=None):
     cfg['date_offset']  = pd.Timedelta(days=7) if interval == '1wk' else pd.DateOffset(months=1)
     cfg['future_freq']  = 'W-SUN' if interval == '1wk' else 'MS'
     cfg['time_window']  = cfg['time_window'] or cfg['periods_per_year']
+
+    PATHS['05_report'] = os.path.join(BASE_DIR, cfg['output_path'])
 
     return cfg

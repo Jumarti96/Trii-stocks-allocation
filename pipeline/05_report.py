@@ -85,7 +85,7 @@ def main():
 
     output = pd.concat([output, portfolio_row])
 
-    output_path = os.path.join(BASE_DIR, cfg['output_path'])
+    output_path = PATHS['05_report']
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     output.to_csv(output_path)
 
