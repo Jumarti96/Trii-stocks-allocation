@@ -77,7 +77,7 @@ def main():
 
     portfolio_row = pd.DataFrame({
         'Portfolio Weight':                       [1],
-        'Expected Annual Return':                 [round(portfolio_stats['Annualized Return'], 4)],
+        'Expected Annual Return':                 [round((weights_series * expected_returns[weights_series.index]).sum(), 4)],
         'Current Price':                          [cop_per_stock.sum()],
         f'Forecasted Price ({last_future_date})': [portfolio_forecasted],
         'Investment (COP k)':                     [cop_per_stock.sum()],
