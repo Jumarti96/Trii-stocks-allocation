@@ -34,14 +34,14 @@ STEPS = {
         'outputs': [PATHS['01_prices'], PATHS['01_returns']],
     },
     2: {
-        'script':  '02_filter.py',
-        'name':    'Technical Signal Filtering',
-        'outputs': [PATHS['02_selected_returns'], PATHS['02_selected_prices']],
+        'script':  '02_predict.py',
+        'name':    'Transformer Prediction and Covariance',
+        'outputs': [PATHS['02_expected_returns'], PATHS['02_covmat'], PATHS['02_metadata']],
     },
     3: {
-        'script':  '03_predict.py',
-        'name':    'Transformer Prediction and Covariance',
-        'outputs': [PATHS['03_expected_returns'], PATHS['03_covmat'], PATHS['03_metadata']],
+        'script':  '03_filter.py',
+        'name':    'Technical Signal Filtering',
+        'outputs': [PATHS['03_selected_returns'], PATHS['03_selected_prices']],
     },
     4: {
         'script':  '04_allocate.py',

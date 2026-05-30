@@ -6,7 +6,10 @@ min/max weight constraints. Iteratively drops stocks whose cumulative weight
 (sorted ascending) falls below MIN_WEIGHT until all remaining stocks satisfy
 the constraint.
 
-Reads  (data/): 03_expected_returns.csv, 03_covmat.csv
+The technical filter is applied here as the allocation gate: the full-universe
+predictions from step 2 are restricted to the names selected by step 3 before optimising.
+
+Reads  (data/): 02_expected_returns.csv, 02_covmat.csv, 03_selected_returns.csv
 Outputs (data/):
     04_weights.csv - optimal weight per selected stock
 """
@@ -30,16 +33,22 @@ def main():
 
     print("\n=== Step 4: Sharpe Ratio Maximising Allocation ===")
 
-    expected_returns = pd.read_csv(PATHS['03_expected_returns'], index_col=0).iloc[:, 0]
-    covmat = pd.read_csv(PATHS['03_covmat'], index_col=0)
+    expected_returns = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
+    covmat = pd.read_csv(PATHS['02_covmat'], index_col=0)
 
     rf_rate          = cfg['rf_rate']
     max_weight       = cfg['max_weight']
     min_weight       = cfg['min_weight']
     periods_per_year = cfg['periods_per_year']
 
-    # Align returns to the covariance matrix index (both come from the same selected set)
-    returns = expected_returns[covmat.index]
+    # Allocation gate: restrict the full-universe predictions to the names selected by
+    # step 3 (intersect defensively in case a selected name is missing upstream).
+    selected = pd.read_csv(PATHS['03_selected_returns'], index_col=0, nrows=0).columns
+    selected = [s for s in selected if s in expected_returns.index and s in covmat.index]
+    print(f"Allocation universe: {len(selected)} selected stock(s).")
+
+    returns = expected_returns[selected]
+    covmat  = covmat.loc[selected, selected]
 
     initial_weights = rk.msr_tuned(
         riskfree_rate=rf_rate, returns=returns, covmat=covmat,
