@@ -5,7 +5,7 @@ Assembles the final allocation CSV from the outputs of the previous steps.
 Computes portfolio index statistics from historical returns and appends a
 PORTFOLIO INDEX summary row.
 
-Reads  (data/): 01_returns.csv, 03_expected_returns.csv, 03_metadata.json,
+Reads  (data/): 01_returns.csv, 02_expected_returns.csv, 02_metadata.json,
                 04_weights.csv
 Outputs:
     results/allocation_output.csv - final human-readable allocation table
@@ -32,10 +32,10 @@ def main():
     print("\n=== Step 5: Generating Report ===")
 
     weights_df       = pd.read_csv(PATHS['04_weights'],           index_col=0)
-    expected_returns = pd.read_csv(PATHS['03_expected_returns'],  index_col=0).iloc[:, 0]
+    expected_returns = pd.read_csv(PATHS['02_expected_returns'],  index_col=0).iloc[:, 0]
     rets             = pd.read_csv(PATHS['01_returns'],           index_col=0)
 
-    with open(PATHS['03_metadata']) as f:
+    with open(PATHS['02_metadata']) as f:
         metadata = json.load(f)
 
     weights_series      = weights_df['Weights']

@@ -1,14 +1,18 @@
 """
-Step 2 - Technical Signal Filtering
+Step 3 - Technical Signal Filtering (allocation gate)
 
 Computes SMA, EMA, MACD, and PRC signals for every ticker and keeps only those
 where at least signal_min_count signals are positive (default: 3 out of 4).
 
+This is purely the allocation gate: it names which stocks are eligible to hold. It no
+longer drives what the Transformer (step 2) trains on - the model trains on the full
+universe, and step 4 restricts the optimisation to the names selected here.
+
 Reads  (data/): 01_prices.csv, 01_returns.csv
 Outputs (data/):
-    02_selected_returns.csv - returns for the stocks that passed the filter
-    02_selected_prices.csv  - prices for the stocks that passed the filter
-    02_signals.csv          - full signal table (all tickers, for inspection)
+    03_selected_returns.csv - returns for the stocks that passed the filter
+    03_selected_prices.csv  - prices for the stocks that passed the filter
+    03_signals.csv          - full signal table (all tickers, for inspection)
 """
 
 import sys
@@ -29,7 +33,7 @@ from config import load_config, PATHS
 def main():
     cfg = load_config()
 
-    print("\n=== Step 2: Computing technical signals ===")
+    print("\n=== Step 3: Computing technical signals (allocation gate) ===")
 
     stocks = pd.read_csv(PATHS['01_prices'],  index_col=0)
     rets   = pd.read_csv(PATHS['01_returns'], index_col=0)
@@ -67,13 +71,13 @@ def main():
     print(f"Passed filter: {len(signals_filtered)} / {len(signals)} stocks")
     print(f"Selected: {list(signals_filtered.index)}")
 
-    selected_returns.to_csv(PATHS['02_selected_returns'])
-    selected_prices.to_csv(PATHS['02_selected_prices'])
-    signals.to_csv(PATHS['02_signals'])
+    selected_returns.to_csv(PATHS['03_selected_returns'])
+    selected_prices.to_csv(PATHS['03_selected_prices'])
+    signals.to_csv(PATHS['03_signals'])
 
-    print(f"Saved: {PATHS['02_selected_returns']}")
-    print(f"       {PATHS['02_selected_prices']}")
-    print(f"       {PATHS['02_signals']}")
+    print(f"Saved: {PATHS['03_selected_returns']}")
+    print(f"       {PATHS['03_selected_prices']}")
+    print(f"       {PATHS['03_signals']}")
 
 
 if __name__ == '__main__':

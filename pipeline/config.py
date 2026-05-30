@@ -18,15 +18,15 @@ PATHS = {
     # Step 1 outputs
     '01_prices':           os.path.join(DATA_DIR, '01_prices.csv'),
     '01_returns':          os.path.join(DATA_DIR, '01_returns.csv'),
-    # Step 2 outputs
-    '02_selected_returns': os.path.join(DATA_DIR, '02_selected_returns.csv'),
-    '02_selected_prices':  os.path.join(DATA_DIR, '02_selected_prices.csv'),
-    '02_signals':          os.path.join(DATA_DIR, '02_signals.csv'),
-    # Step 3 outputs
-    '03_expected_returns': os.path.join(DATA_DIR, '03_expected_returns.csv'),
-    '03_covmat':           os.path.join(DATA_DIR, '03_covmat.csv'),
-    '03_predictions':      os.path.join(DATA_DIR, '03_predictions.csv'),
-    '03_metadata':         os.path.join(DATA_DIR, '03_metadata.json'),
+    # Step 2 outputs (Transformer prediction, full universe)
+    '02_expected_returns': os.path.join(DATA_DIR, '02_expected_returns.csv'),
+    '02_covmat':           os.path.join(DATA_DIR, '02_covmat.csv'),
+    '02_predictions':      os.path.join(DATA_DIR, '02_predictions.csv'),
+    '02_metadata':         os.path.join(DATA_DIR, '02_metadata.json'),
+    # Step 3 outputs (technical filter / allocation gate)
+    '03_selected_returns': os.path.join(DATA_DIR, '03_selected_returns.csv'),
+    '03_selected_prices':  os.path.join(DATA_DIR, '03_selected_prices.csv'),
+    '03_signals':          os.path.join(DATA_DIR, '03_signals.csv'),
     # Step 4 outputs
     '04_weights':          os.path.join(DATA_DIR, '04_weights.csv'),
     # Step 5 output — set dynamically by load_config() from cfg['output_path']

@@ -1,7 +1,9 @@
 # Stock Portfolio Allocation: Portfolio Optimization Project
 
 ## Overview
-This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, filters stocks using technical signals, forecasts future returns using a Transformer Neural Network, estimates a covariance matrix using Ledoit-Wolf shrinkage, and finds the allocation that maximizes the Sharpe ratio. The full capital budget is deployed into the selected equity positions.
+This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, forecasts future returns using a Transformer Neural Network (trained on the **full** stock universe), estimates a covariance matrix using Ledoit-Wolf shrinkage, filters stocks using technical signals, and finds the allocation that maximizes the Sharpe ratio over the filtered set. The full capital budget is deployed into the selected equity positions.
+
+The Transformer (step 2) and the technical filter (step 3) are **independent branches off the downloaded data** (step 1): prediction trains on every ticker, while the filter acts purely as an **allocation gate** — it decides which stocks are eligible to hold, and step 4 restricts the optimization to those names.
 
 ---
 
@@ -111,10 +113,12 @@ Each script in `pipeline/` is fully self-contained and can be run independently,
 | Step | Script | Outputs to `data/` |
 |---|---|---|
 | 1 | `01_download.py` | `01_prices.csv`, `01_returns.csv` |
-| 2 | `02_filter.py` | `02_selected_returns.csv`, `02_selected_prices.csv`, `02_signals.csv` |
-| 3 | `03_predict.py` | `03_expected_returns.csv`, `03_covmat.csv`, `03_predictions.csv`, `03_metadata.json` |
+| 2 | `02_predict.py` | `02_expected_returns.csv`, `02_covmat.csv`, `02_predictions.csv`, `02_metadata.json` |
+| 3 | `03_filter.py` | `03_selected_returns.csv`, `03_selected_prices.csv`, `03_signals.csv` |
 | 4 | `04_allocate.py` | `04_weights.csv` |
 | 5 | `05_report.py` | `results/allocation_output.csv` |
+
+Steps 2 (predict) and 3 (filter) both depend only on step 1 and are independent of each other; step 4 consumes both. The Transformer model itself lives in `src/transformer_model.py`.
 
 ---
 
@@ -148,6 +152,8 @@ Run the four notebooks in order:
 | 4 | `4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb` | Backtests CPPI strategy; runs Brownian motion simulation |
 
 Each notebook loads core parameters from `params.yaml` automatically. Intermediate CSV files are saved to `temp_references/` and picked up by the next notebook.
+
+> **Note:** `pipeline/` is the source of truth. The notebooks are kept for exploration and charts and may lag the pipeline. In particular, the Transformer notebook (2) now trains on the **full universe** to match the pipeline; other notebook details may differ from the current `pipeline/` scripts.
 
 ---
 
@@ -189,21 +195,21 @@ Trii Stocks allocation/
 ├── pipeline/                   # One script per pipeline step
 │   ├── config.py               # Shared config loader (reads params.yaml)
 │   ├── 01_download.py          # Download & preprocess stock data
-│   ├── 02_filter.py            # Technical signal filtering
-│   ├── 03_predict.py           # Transformer prediction + covariance
-│   ├── 04_allocate.py          # Sharpe ratio optimisation
+│   ├── 02_predict.py           # Transformer prediction + covariance (full universe)
+│   ├── 03_filter.py            # Technical signal filtering (allocation gate)
+│   ├── 04_allocate.py          # Sharpe ratio optimisation (over the filtered set)
 │   └── 05_report.py            # Final report assembly
 │
 ├── data/                       # Intermediate files between pipeline steps
 │   ├── 01_prices.csv
 │   ├── 01_returns.csv
-│   ├── 02_selected_returns.csv
-│   ├── 02_selected_prices.csv
-│   ├── 02_signals.csv
-│   ├── 03_expected_returns.csv
-│   ├── 03_covmat.csv
-│   ├── 03_predictions.csv
-│   ├── 03_metadata.json
+│   ├── 02_expected_returns.csv
+│   ├── 02_covmat.csv
+│   ├── 02_predictions.csv
+│   ├── 02_metadata.json
+│   ├── 03_selected_returns.csv
+│   ├── 03_selected_prices.csv
+│   ├── 03_signals.csv
 │   └── 04_weights.csv
 │
 ├── results/
@@ -216,7 +222,8 @@ Trii Stocks allocation/
 │   └── 4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb
 │
 ├── src/
-│   └── risk_kit.py             # Core module: financial stats, optimisation, simulation
+│   ├── risk_kit.py             # Core module: financial stats, optimisation, simulation
+│   └── transformer_model.py    # Transformer model + train_and_predict
 │
 ├── stock_tickers/
 │   ├── colombia_stocks_trii.csv
