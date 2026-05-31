@@ -314,3 +314,57 @@ class TestRunExperiment:
         )
         sums = result["weights"].sum(axis=1)
         assert np.allclose(sums, 1.0, atol=1e-6)
+
+
+from experiments.measure_allocation_stability import format_summary, write_outputs
+
+
+def _sample_result(iterations=3):
+    names = ["A", "B", "C"]
+    weights = pd.DataFrame(
+        [
+            {"A": 0.6, "B": 0.4, "C": 0.0},
+            {"A": 0.5, "B": 0.5, "C": 0.0},
+            {"A": 0.4, "B": 0.3, "C": 0.3},
+        ][:iterations]
+    )
+    mu = pd.DataFrame(
+        [
+            {"A": 0.20, "B": 0.12, "C": 0.05},
+            {"A": 0.21, "B": 0.11, "C": 0.06},
+            {"A": 0.19, "B": 0.13, "C": 0.04},
+        ][:iterations]
+    )
+    metrics = pd.DataFrame(
+        [
+            {"ret": 0.16, "vol": 0.10, "sharpe": 1.6},
+            {"ret": 0.17, "vol": 0.10, "sharpe": 1.7},
+            {"ret": 0.15, "vol": 0.11, "sharpe": 1.4},
+        ][:iterations]
+    )
+    return {"mu": mu, "weights": weights, "metrics": metrics, "selected": names}
+
+
+class TestFormatSummary:
+    def test_contains_key_sections(self):
+        text = format_summary(_sample_result())
+        assert "Composition instability" in text
+        assert "Value stability" in text
+        assert "Selection frequency" in text
+
+    def test_single_iteration_shows_na(self):
+        text = format_summary(_sample_result(iterations=1))
+        assert "N/A" in text  # turnover / jaccard undefined for 1 iteration
+
+
+class TestWriteOutputs:
+    def test_writes_three_files(self, tmp_path):
+        paths = write_outputs(_sample_result(), str(tmp_path))
+        for key in ("weights", "metrics", "summary"):
+            assert os.path.exists(paths[key])
+
+    def test_weights_csv_roundtrips(self, tmp_path):
+        result = _sample_result()
+        paths = write_outputs(result, str(tmp_path))
+        reloaded = pd.read_csv(paths["weights"], index_col=0)
+        assert reloaded.shape == result["weights"].shape

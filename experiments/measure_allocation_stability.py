@@ -259,3 +259,65 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
         "metrics": pd.DataFrame(metric_records),
         "selected": selected,
     }
+
+
+def _fmt(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "N/A"
+    return f"{v:.4f}"
+
+
+def format_summary(result):
+    """Build the human-readable stability report from a run_experiment result."""
+    weights_df = result["weights"]
+    metrics_df = result["metrics"]
+    mu_df = result["mu"]
+
+    freq = selection_frequency(weights_df)
+    wstd = weight_dispersion(weights_df)
+    turnover = mean_turnover(weights_df)
+    jacc = mean_jaccard(weights_df)
+    disp = metric_dispersion(metrics_df)
+    amp = amplification_factor(mu_df, weights_df)
+
+    lines = []
+    lines.append(f"Iterations: {len(weights_df)} | Selected names: {weights_df.shape[1]}")
+    lines.append("")
+    lines.append("== Composition instability ==")
+    lines.append(f"Mean pairwise turnover: {_fmt(turnover)}")
+    lines.append(f"Mean pairwise Jaccard:  {_fmt(jacc)}")
+    lines.append("")
+    lines.append("Selection frequency (fraction of iterations held):")
+    for name, v in freq.sort_values(ascending=False).items():
+        lines.append(f"  {name:<14} {v:6.1%}   weight std {wstd[name]:.4f}")
+    lines.append("")
+    lines.append("== Value stability ==")
+    for col in ["ret", "vol", "sharpe"]:
+        d = disp[col]
+        lines.append(
+            f"  {col:<7} mean {d['mean']:.4f}  std {d['std']:.4f}  CoV {_fmt(d['cov'])}"
+        )
+    lines.append("")
+    lines.append(f"Amplification (mean weight std / mean mu std): {_fmt(amp)}")
+    lines.append("")
+    lines.append(
+        "Note: fewer transformer-runs => noisier mu => MORE instability. This is a "
+        "conservative upper bound on production (100-run) instability; re-run with "
+        "--transformer-runs 100 for the production figure."
+    )
+    return "\n".join(lines)
+
+
+def write_outputs(result, outdir):
+    """Write weights/metrics CSVs and the summary text; return their paths."""
+    os.makedirs(outdir, exist_ok=True)
+    paths = {
+        "weights": os.path.join(outdir, "stability_weights.csv"),
+        "metrics": os.path.join(outdir, "stability_metrics.csv"),
+        "summary": os.path.join(outdir, "stability_summary.txt"),
+    }
+    result["weights"].to_csv(paths["weights"], index_label="iteration")
+    result["metrics"].to_csv(paths["metrics"], index_label="iteration")
+    with open(paths["summary"], "w") as f:
+        f.write(format_summary(result))
+    return paths
