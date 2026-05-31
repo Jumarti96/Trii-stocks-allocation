@@ -146,3 +146,35 @@ class TestWeightDispersion:
         disp = weight_dispersion(df)
         assert disp["A"] == 0.0
         assert disp["B"] > 0.0
+
+
+from experiments.measure_allocation_stability import mean_turnover, mean_jaccard
+
+
+class TestMeanTurnover:
+    def test_two_disjoint_rows(self):
+        # rows [1,0] and [0,1]: turnover = 0.5*(|1|+|1|) = 1.0
+        df = pd.DataFrame([{"A": 1.0, "B": 0.0}, {"A": 0.0, "B": 1.0}])
+        assert abs(mean_turnover(df) - 1.0) < 1e-12
+
+    def test_identical_rows_zero(self):
+        df = pd.DataFrame([{"A": 0.5, "B": 0.5}, {"A": 0.5, "B": 0.5}])
+        assert mean_turnover(df) == 0.0
+
+    def test_single_row_returns_none(self):
+        df = pd.DataFrame([{"A": 1.0, "B": 0.0}])
+        assert mean_turnover(df) is None
+
+
+class TestMeanJaccard:
+    def test_identical_sets_is_one(self):
+        df = pd.DataFrame([{"A": 0.5, "B": 0.5}, {"A": 0.4, "B": 0.6}])
+        assert abs(mean_jaccard(df) - 1.0) < 1e-12
+
+    def test_disjoint_sets_is_zero(self):
+        df = pd.DataFrame([{"A": 1.0, "B": 0.0}, {"A": 0.0, "B": 1.0}])
+        assert mean_jaccard(df) == 0.0
+
+    def test_single_row_returns_none(self):
+        df = pd.DataFrame([{"A": 1.0, "B": 0.0}])
+        assert mean_jaccard(df) is None

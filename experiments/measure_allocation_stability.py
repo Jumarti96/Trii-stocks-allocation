@@ -106,3 +106,38 @@ def selection_frequency(weights_df, eps=1e-9):
 def weight_dispersion(weights_df):
     """Population std of each name's weight across iterations."""
     return weights_df.std(axis=0, ddof=0)
+
+
+def mean_turnover(weights_df):
+    """Mean over all iteration pairs of 0.5 * L1 weight distance.
+
+    None if fewer than 2 iterations.
+    """
+    if len(weights_df) < 2:
+        return None
+    W = weights_df.values
+    n = len(W)
+    total, count = 0.0, 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            total += 0.5 * np.abs(W[i] - W[j]).sum()
+            count += 1
+    return total / count
+
+
+def mean_jaccard(weights_df, eps=1e-9):
+    """Mean pairwise Jaccard similarity of the held-name sets.
+
+    None if fewer than 2 iterations.
+    """
+    if len(weights_df) < 2:
+        return None
+    held = weights_df.abs() > eps
+    rows = [set(held.columns[held.iloc[i].values]) for i in range(len(held))]
+    sims = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            a, b = rows[i], rows[j]
+            union = a | b
+            sims.append(len(a & b) / len(union) if union else 1.0)
+    return float(np.mean(sims))
