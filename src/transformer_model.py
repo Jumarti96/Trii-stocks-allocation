@@ -97,13 +97,22 @@ def weighted_mean_return(preds_df, lambda_=0.2):
     })
 
 
+def annualize_period_return(period_returns, periods_per_year):
+    """Compound-annualise a per-period return (scalar or Series): (1+r)^ppy - 1.
+
+    Display-only helper: used by the report to present per-period forecasts as
+    annual figures. It is NOT used to build the vector fed to the optimiser.
+    """
+    return (1 + period_returns) ** periods_per_year - 1
+
+
 def annualize_expected_returns(preds_df, periods_per_year, lambda_=0.2):
     """Exponential-decay-weighted annualised expected return per column of preds_df.
 
-    Used by step 2 and the train-universe comparison so both annualise identically.
+    Used by the train-universe comparison experiment and the report's display path.
     """
     wmr = weighted_mean_return(preds_df, lambda_=lambda_)
-    return (1 + wmr) ** periods_per_year - 1
+    return annualize_period_return(wmr, periods_per_year)
 
 
 def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
