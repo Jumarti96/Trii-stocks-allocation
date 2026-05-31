@@ -36,7 +36,7 @@ def main():
     expected_returns = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
     covmat = pd.read_csv(PATHS['02_covmat'], index_col=0)
 
-    rf_rate          = cfg['rf_rate']
+    rf_period        = cfg['rf_period']
     max_weight       = cfg['max_weight']
     min_weight       = cfg['min_weight']
     periods_per_year = cfg['periods_per_year']
@@ -51,7 +51,7 @@ def main():
     covmat  = covmat.loc[selected, selected]
 
     initial_weights = rk.msr_tuned(
-        riskfree_rate=rf_rate, returns=returns, covmat=covmat,
+        riskfree_rate=rf_period, returns=returns, covmat=covmat,
         max_weight=max_weight, periods_per_year=periods_per_year, debug=False
     )
     optimal = (
@@ -79,7 +79,7 @@ def main():
             break
 
         w = rk.msr_tuned(
-            riskfree_rate=rf_rate,
+            riskfree_rate=rf_period,
             returns=returns[optimal.index],
             covmat=covmat.loc[optimal.index, optimal.index],
             max_weight=max_weight,
