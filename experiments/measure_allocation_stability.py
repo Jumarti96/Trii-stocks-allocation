@@ -230,8 +230,7 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
     if seed_fn is None:
         seed_fn = seed_everything
 
-    ppy = cfg["periods_per_year"]
-    rf = cfg["rf_rate"]
+    rf = cfg["rf_period"]
 
     covmat = pd.DataFrame(
         LedoitWolf().fit(rets).covariance_, index=rets.columns, columns=rets.columns
