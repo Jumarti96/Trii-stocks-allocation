@@ -178,3 +178,34 @@ class TestMeanJaccard:
     def test_single_row_returns_none(self):
         df = pd.DataFrame([{"A": 1.0, "B": 0.0}])
         assert mean_jaccard(df) is None
+
+
+from experiments.measure_allocation_stability import (
+    metric_dispersion,
+    amplification_factor,
+)
+
+
+class TestMetricDispersion:
+    def test_mean_std_cov(self):
+        df = pd.DataFrame({"ret": [0.10, 0.20], "vol": [0.05, 0.05], "sharpe": [1.0, 3.0]})
+        disp = metric_dispersion(df)
+        assert abs(disp["ret"]["mean"] - 0.15) < 1e-12
+        assert disp["vol"]["std"] == 0.0
+        # CoV = std / |mean| ; sharpe mean=2, std(ddof=0)=1 -> 0.5
+        assert abs(disp["sharpe"]["cov"] - 0.5) < 1e-12
+
+
+class TestAmplificationFactor:
+    def test_ratio_of_mean_stds(self):
+        # mu std per name: A->0, B->0.5 ; mean = 0.25
+        mu_df = pd.DataFrame({"A": [0.10, 0.10], "B": [0.10, 1.10]})
+        # weight std per name: A->0.05, B->0.05 ; mean = 0.05
+        w_df = pd.DataFrame({"A": [0.45, 0.55], "B": [0.55, 0.45]})
+        amp = amplification_factor(mu_df, w_df)
+        assert abs(amp - (0.05 / 0.25)) < 1e-9
+
+    def test_zero_input_std_is_nan(self):
+        mu_df = pd.DataFrame({"A": [0.1, 0.1], "B": [0.2, 0.2]})
+        w_df = pd.DataFrame({"A": [0.4, 0.6], "B": [0.6, 0.4]})
+        assert math.isnan(amplification_factor(mu_df, w_df))

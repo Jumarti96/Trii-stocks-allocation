@@ -141,3 +141,26 @@ def mean_jaccard(weights_df, eps=1e-9):
             union = a | b
             sims.append(len(a & b) / len(union) if union else 1.0)
     return float(np.mean(sims))
+
+
+def metric_dispersion(metrics_df):
+    """mean / population-std / coefficient-of-variation for each metric column."""
+    out = {}
+    for col in metrics_df.columns:
+        s = metrics_df[col]
+        mean = float(s.mean())
+        std = float(s.std(ddof=0))
+        cov = std / abs(mean) if mean != 0 else float("nan")
+        out[col] = {"mean": mean, "std": std, "cov": cov}
+    return out
+
+
+def amplification_factor(mu_df, weights_df):
+    """Mean per-name weight std divided by mean per-name mu std.
+
+    A rough indicator of how much the optimiser magnifies forecast jitter.
+    NaN if the input (mu) dispersion is zero.
+    """
+    mu_disp = float(mu_df.std(axis=0, ddof=0).mean())
+    w_disp = float(weights_df.std(axis=0, ddof=0).mean())
+    return w_disp / mu_disp if mu_disp > 0 else float("nan")
