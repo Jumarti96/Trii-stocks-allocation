@@ -209,3 +209,43 @@ class TestAmplificationFactor:
         mu_df = pd.DataFrame({"A": [0.1, 0.1], "B": [0.2, 0.2]})
         w_df = pd.DataFrame({"A": [0.4, 0.6], "B": [0.6, 0.4]})
         assert math.isnan(amplification_factor(mu_df, w_df))
+
+
+from experiments.measure_allocation_stability import select_stocks
+
+
+@pytest.fixture
+def synthetic_prices_returns():
+    """60 weekly points for 4 tickers: 2 uptrending, 2 downtrending."""
+    np.random.seed(7)
+    n = 60
+    idx = pd.date_range("2023-01-01", periods=n, freq="W-SUN")
+    up = lambda drift: 100 * np.cumprod(1 + np.random.normal(drift, 0.01, n))
+    prices = pd.DataFrame(
+        {
+            "UP1": up(0.01), "UP2": up(0.008),
+            "DN1": up(-0.01), "DN2": up(-0.008),
+        },
+        index=idx,
+    )
+    returns = prices.pct_change().dropna()
+    return prices, returns
+
+
+class TestSelectStocks:
+    def test_subset_of_columns(self, synthetic_prices_returns):
+        prices, returns = synthetic_prices_returns
+        cfg = {"ma_terms": 10, "signal_min_count": 3}
+        selected = select_stocks(prices, returns, cfg)
+        assert set(selected).issubset(set(prices.columns))
+
+    def test_deterministic(self, synthetic_prices_returns):
+        prices, returns = synthetic_prices_returns
+        cfg = {"ma_terms": 10, "signal_min_count": 3}
+        assert select_stocks(prices, returns, cfg) == select_stocks(prices, returns, cfg)
+
+    def test_returns_only_names_present_in_returns(self, synthetic_prices_returns):
+        prices, returns = synthetic_prices_returns
+        cfg = {"ma_terms": 10, "signal_min_count": 3}
+        selected = select_stocks(prices, returns, cfg)
+        assert all(name in returns.columns for name in selected)

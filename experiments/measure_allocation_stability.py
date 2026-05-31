@@ -164,3 +164,46 @@ def amplification_factor(mu_df, weights_df):
     mu_disp = float(mu_df.std(axis=0, ddof=0).mean())
     w_disp = float(weights_df.std(axis=0, ddof=0).mean())
     return w_disp / mu_disp if mu_disp > 0 else float("nan")
+
+
+def select_stocks(prices, rets, cfg):
+    """Technical-filter selection — mirrors pipeline/03_filter.py.
+
+    Keeps tickers with at least cfg['signal_min_count'] positive signals out of
+    SMA/EMA/MACD/PRC. Returns the kept names that also exist in `rets`.
+    """
+    ma_terms = cfg["ma_terms"]
+    rows = []
+    for ticker in prices.columns:
+        sig = rk.technical_indicators(
+            prices[ticker],
+            indicators=["SMA", "EMA", "MACD", "PRC"],
+            ma_terms=ma_terms,
+            macd_params=[12, 26, 9],
+            return_df=True,
+            plot=False,
+            signal_tolerance=0.975,
+        ).iloc[-1]
+        sig_df = pd.DataFrame(sig).T
+        sig_df.index = [ticker]
+        sig_df.rename(columns={ticker: "Price"}, inplace=True)
+        rows.append(sig_df)
+
+    signals = pd.concat(rows, axis=0)
+    keep = signals[
+        np.int64(signals["MACD Signal"])
+        + np.int64(signals[f"SMA{ma_terms} Signal"])
+        + np.int64(signals[f"EMA{ma_terms} Signal"])
+        + np.int64(signals["PRC Signal"])
+        >= cfg["signal_min_count"]
+    ]
+    return [t for t in keep.index if t in rets.columns]
+
+
+def seed_everything(seed):
+    """Seed numpy and torch (torch imported lazily to keep helpers light)."""
+    np.random.seed(seed)
+    import torch
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
