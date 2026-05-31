@@ -559,7 +559,19 @@ with:
         mu = period_mu_fn(preds)
 ```
 
-Also update the docstring line listing the seams: change `predict_fn, annualize_fn, select_fn, seed_fn` to `predict_fn, period_mu_fn, select_fn, seed_fn` if present.
+(d) For consistency, the reported value metrics must also use the per-period risk-free rate
+(the reported Sharpe must mix per-period return, per-period vol, and per-period rf). Replace:
+```python
+    ppy = cfg["periods_per_year"]
+    rf = cfg["rf_rate"]
+```
+with:
+```python
+    rf = cfg["rf_period"]
+```
+(`ppy` is now unused in `run_experiment` since `period_mu_fn` takes no ppy — removing it is fine.)
+
+(e) Update the docstring line listing the seams: change `predict_fn, annualize_fn, select_fn, seed_fn` to `predict_fn, period_mu_fn, select_fn, seed_fn` if present.
 
 - [ ] **Step 4: Run the full instrument suite** — `"C:/Users/jumar/AppData/Local/Microsoft/WindowsApps/python.exe" -m pytest tests/test_measure_allocation_stability.py -v` — Expected: PASS (31 tests: 29 from Task 6 + the 2 new robustness/scale-invariance tests).
 
