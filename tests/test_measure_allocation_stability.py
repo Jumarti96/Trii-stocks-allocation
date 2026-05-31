@@ -108,3 +108,41 @@ class TestPortfolioMetrics:
         )
         m = portfolio_metrics(weights, returns, covmat, rf=0.0)
         assert abs(m["ret"] - 0.15) < 1e-10
+
+
+from experiments.measure_allocation_stability import (
+    selection_frequency,
+    weight_dispersion,
+)
+
+
+@pytest.fixture
+def weights_df():
+    """3 iterations x 3 names. C is held in 1 of 3 runs."""
+    return pd.DataFrame(
+        [
+            {"A": 0.6, "B": 0.4, "C": 0.0},
+            {"A": 0.5, "B": 0.5, "C": 0.0},
+            {"A": 0.4, "B": 0.3, "C": 0.3},
+        ]
+    )
+
+
+class TestSelectionFrequency:
+    def test_fraction_held(self, weights_df):
+        freq = selection_frequency(weights_df)
+        assert freq["A"] == 1.0
+        assert freq["B"] == 1.0
+        assert abs(freq["C"] - 1 / 3) < 1e-12
+
+    def test_returns_series_over_all_names(self, weights_df):
+        freq = selection_frequency(weights_df)
+        assert set(freq.index) == {"A", "B", "C"}
+
+
+class TestWeightDispersion:
+    def test_zero_for_constant_column(self):
+        df = pd.DataFrame({"A": [0.5, 0.5, 0.5], "B": [0.1, 0.2, 0.3]})
+        disp = weight_dispersion(df)
+        assert disp["A"] == 0.0
+        assert disp["B"] > 0.0

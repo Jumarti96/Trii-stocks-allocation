@@ -96,3 +96,13 @@ def portfolio_metrics(weights, returns, covmat, rf):
     vol = float(rk.portfolio_vol(w, C))
     sharpe = (ret - rf) / vol if vol > 0 else float("nan")
     return {"ret": ret, "vol": vol, "sharpe": sharpe}
+
+
+def selection_frequency(weights_df, eps=1e-9):
+    """Fraction of iterations in which each name is held (weight > eps)."""
+    return (weights_df.abs() > eps).mean(axis=0)
+
+
+def weight_dispersion(weights_df):
+    """Population std of each name's weight across iterations."""
+    return weights_df.std(axis=0, ddof=0)
