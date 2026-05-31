@@ -34,7 +34,7 @@ import pandas as pd
 from sklearn.covariance import LedoitWolf
 
 from config import load_config, PATHS
-from transformer_model import train_and_predict, annualize_expected_returns, describe_device
+from transformer_model import train_and_predict, weighted_mean_return, describe_device
 
 
 def main():
@@ -47,7 +47,6 @@ def main():
     rets   = pd.read_csv(PATHS['01_returns'], index_col=0)
 
     periods_to_forecast = cfg['periods_to_forecast']
-    periods_per_year    = cfg['periods_per_year']
 
     # Train on the full universe and forecast every stock
     preds_df = train_and_predict(rets, cfg)
@@ -65,8 +64,9 @@ def main():
     lower_w = float(np.percentile(rets.values, 1))
     upper_w = float(np.percentile(rets.values, 99))
 
-    # Annualised expected returns with exponential-decay weighting
-    expected_returns = annualize_expected_returns(preds_df, periods_per_year)
+    # Per-period expected returns (exp-decay weighted). Annualisation is a DISPLAY
+    # concern handled in step 5; the optimiser consumes these per-period values directly.
+    expected_returns = weighted_mean_return(preds_df)
 
     # Ledoit-Wolf covariance over the full universe
     covmat = pd.DataFrame(
@@ -79,7 +79,7 @@ def main():
     forecasted_prices = current_prices * (preds_df + 1).prod()
 
     # Write outputs
-    expected_returns.to_csv(PATHS['02_expected_returns'], header=['Expected Return'])
+    expected_returns.to_csv(PATHS['02_expected_returns'], header=['Expected Period Return'])
     covmat.to_csv(PATHS['02_covmat'])
 
     preds_out = preds_df.copy()
