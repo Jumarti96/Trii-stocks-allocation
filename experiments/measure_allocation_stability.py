@@ -210,7 +210,7 @@ def seed_everything(seed):
 
 
 def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
-                   predict_fn=None, annualize_fn=None, select_fn=None, seed_fn=None):
+                   predict_fn=None, period_mu_fn=None, select_fn=None, seed_fn=None):
     """Run `iterations` predict->allocate passes and collect the raw evidence.
 
     Covariance (Ledoit-Wolf) and the selected-name set are deterministic and
@@ -221,10 +221,10 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
     Returns dict with DataFrames: 'mu' and 'weights' (iterations x selected),
     'metrics' (iterations x [ret, vol, sharpe]), and 'selected' (list).
     """
-    if predict_fn is None or annualize_fn is None:
-        from transformer_model import train_and_predict, annualize_expected_returns
+    if predict_fn is None or period_mu_fn is None:
+        from transformer_model import train_and_predict, weighted_mean_return
         predict_fn = predict_fn or train_and_predict
-        annualize_fn = annualize_fn or annualize_expected_returns
+        period_mu_fn = period_mu_fn or weighted_mean_return
     if select_fn is None:
         select_fn = select_stocks
     if seed_fn is None:
@@ -243,7 +243,7 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
     for i in range(1, iterations + 1):
         seed_fn(seed + i)
         preds = predict_fn(rets, cfg, n_runs=transformer_runs, verbose=False)
-        mu = annualize_fn(preds, ppy)
+        mu = period_mu_fn(preds)
         mu_sel = mu.loc[selected]
         weights = allocate_msr(mu_sel, cov_sel, cfg)
         survivors = weights[weights.abs() > 1e-9]

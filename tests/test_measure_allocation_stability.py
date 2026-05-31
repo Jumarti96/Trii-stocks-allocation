@@ -16,6 +16,8 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from risk_kit import msr_tuned
 
 from experiments.measure_allocation_stability import allocate_msr
 
@@ -287,7 +289,7 @@ class TestRunExperiment:
             vals = np.vstack([base + shift, base + shift])
             return pd.DataFrame(vals, columns=rets.columns)
 
-        def annualize_fn(preds, ppy):
+        def period_mu_fn(preds):
             return preds.mean(axis=0)
 
         def select_fn(prices, rets, cfg):
@@ -296,14 +298,14 @@ class TestRunExperiment:
         def seed_fn(seed):
             pass
 
-        return predict_fn, annualize_fn, select_fn, seed_fn
+        return predict_fn, period_mu_fn, select_fn, seed_fn
 
     def test_output_shapes(self):
         prices, rets, cfg = self._inputs()
-        predict_fn, annualize_fn, select_fn, seed_fn = self._stubs()
+        predict_fn, period_mu_fn, select_fn, seed_fn = self._stubs()
         result = run_experiment(
             prices, rets, cfg, iterations=5, transformer_runs=2, seed=0,
-            predict_fn=predict_fn, annualize_fn=annualize_fn,
+            predict_fn=predict_fn, period_mu_fn=period_mu_fn,
             select_fn=select_fn, seed_fn=seed_fn,
         )
         assert result["weights"].shape == (5, 4)
@@ -314,14 +316,33 @@ class TestRunExperiment:
 
     def test_weights_rows_sum_to_one(self):
         prices, rets, cfg = self._inputs()
-        predict_fn, annualize_fn, select_fn, seed_fn = self._stubs()
+        predict_fn, period_mu_fn, select_fn, seed_fn = self._stubs()
         result = run_experiment(
             prices, rets, cfg, iterations=3, transformer_runs=2, seed=0,
-            predict_fn=predict_fn, annualize_fn=annualize_fn,
+            predict_fn=predict_fn, period_mu_fn=period_mu_fn,
             select_fn=select_fn, seed_fn=seed_fn,
         )
         sums = result["weights"].sum(axis=1)
         assert np.allclose(sums, 1.0, atol=1e-6)
+
+    def test_weights_invariant_to_periods_per_year(self):
+        # With rf_period held at 0, the per-period optimisation must give identical
+        # mu and weights regardless of periods_per_year (mu carries no ppy term).
+        import numpy as np
+        prices, rets, cfg = self._inputs()
+        cfg_weekly = dict(cfg, periods_per_year=52)
+        cfg_monthly = dict(cfg, periods_per_year=12)
+        # fresh stubs per call so the predict_fn drift counter starts equal
+        p1, m1, s1, sd1 = self._stubs()
+        r_weekly = run_experiment(prices, rets, cfg_weekly,
+                                  iterations=3, transformer_runs=2, seed=0,
+                                  predict_fn=p1, period_mu_fn=m1, select_fn=s1, seed_fn=sd1)
+        p2, m2, s2, sd2 = self._stubs()
+        r_monthly = run_experiment(prices, rets, cfg_monthly,
+                                   iterations=3, transformer_runs=2, seed=0,
+                                   predict_fn=p2, period_mu_fn=m2, select_fn=s2, seed_fn=sd2)
+        assert np.allclose(r_weekly["weights"].values, r_monthly["weights"].values)
+        assert np.allclose(r_weekly["mu"].values, r_monthly["mu"].values)
 
 
 from experiments.measure_allocation_stability import format_summary, write_outputs
@@ -376,3 +397,17 @@ class TestWriteOutputs:
         paths = write_outputs(result, str(tmp_path))
         reloaded = pd.read_csv(paths["weights"], index_col=0)
         assert reloaded.shape == result["weights"].shape
+
+
+class TestOptimizerScaleInvariance:
+    def test_weights_unchanged_under_consistent_scaling(self):
+        # max-Sharpe is invariant to (mu->c*mu, Sigma->c^2*Sigma, rf->c*rf):
+        # justifies optimising in per-period units instead of annualised ones.
+        import numpy as np
+        returns = pd.Series({"A": 0.02, "B": 0.012, "C": 0.015})
+        cov = pd.DataFrame(np.diag([0.04, 0.05, 0.06]), index=returns.index, columns=returns.index)
+        w1 = msr_tuned(0.001, returns=returns, covmat=cov, max_weight=0.6, periods_per_year=12)
+        c = 52
+        w2 = msr_tuned(0.001 * c, returns=returns * c, covmat=cov * (c ** 2),
+                       max_weight=0.6, periods_per_year=12)
+        assert np.allclose(w1, w2, atol=1e-4)
