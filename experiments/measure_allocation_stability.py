@@ -44,7 +44,7 @@ def allocate_msr(returns, covmat, cfg):
     Mirrors pipeline/04_allocate.py. Returns a Series over `returns.index`;
     names eliminated for failing the min-weight floor get weight 0.0.
     """
-    rf = cfg["rf_rate"]
+    rf = cfg["rf_period"]
     max_w = cfg["max_weight"]
     min_w = cfg["min_weight"]
     ppy = cfg["periods_per_year"]

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from experiments.measure_allocation_stability import allocate_msr
 
 
-CFG = {"rf_rate": 0.0, "max_weight": 0.6, "min_weight": 0.05, "periods_per_year": 12}
+CFG = {"rf_rate": 0.0, "rf_period": 0.0, "max_weight": 0.6, "min_weight": 0.05, "periods_per_year": 12}
 
 
 @pytest.fixture
@@ -81,6 +81,14 @@ class TestAllocateMsr:
         w = allocate_msr(returns, covmat, CFG)
         assert w["E"] == 0.0
         assert abs(w.sum() - 1.0) < 1e-6
+
+    def test_uses_rf_period_key(self, three_assets):
+        # allocate_msr must read cfg['rf_period']; a CFG missing it should KeyError.
+        returns, covmat = three_assets
+        bad_cfg = {"rf_rate": 0.0, "max_weight": 0.6, "min_weight": 0.05, "periods_per_year": 12}
+        import pytest
+        with pytest.raises(KeyError):
+            allocate_msr(returns, covmat, bad_cfg)
 
 
 from experiments.measure_allocation_stability import portfolio_metrics
@@ -263,7 +271,7 @@ class TestRunExperiment:
         rets = pd.DataFrame(np.random.normal(0.002, 0.02, (n, 4)), index=idx, columns=cols)
         prices = (1 + rets).cumprod() * 100
         cfg = {
-            "rf_rate": 0.0, "max_weight": 0.6, "min_weight": 0.05,
+            "rf_rate": 0.0, "rf_period": 0.0, "max_weight": 0.6, "min_weight": 0.05,
             "periods_per_year": 12,
         }
         return prices, rets, cfg
