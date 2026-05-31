@@ -72,6 +72,25 @@ def three_assets():
     return returns, covmat
 
 
+@pytest.fixture
+def five_assets_one_dominated():
+    """Four equivalent good assets + one dominated asset (E).
+
+    Equal returns/variance among A-D give ~0.25 each; E's strongly negative
+    return forces it to ~0, so the elimination loop drops it (cumulative weight
+    < min_weight) and re-optimises the remaining four (len > 2) back to weights
+    that still sum to 1. With only three assets, dropping one would trip the
+    `len(optimal) <= 2` guard before re-optimising, so >=5 assets are needed to
+    exercise the elimination path cleanly.
+    """
+    returns = pd.Series({"A": 0.15, "B": 0.15, "C": 0.15, "D": 0.15, "E": -0.50})
+    covmat = pd.DataFrame(
+        np.diag([0.04, 0.04, 0.04, 0.04, 0.04]),
+        index=returns.index, columns=returns.index,
+    )
+    return returns, covmat
+
+
 class TestAllocateMsr:
     def test_weights_sum_to_one(self, three_assets):
         returns, covmat = three_assets
@@ -93,12 +112,14 @@ class TestAllocateMsr:
         w = allocate_msr(returns, covmat, CFG)
         assert (w >= -1e-8).all()
 
-    def test_low_return_asset_eliminated(self, three_assets):
-        # Asset C has a very low return; with min_weight=0.05 it should be
-        # dropped entirely (weight exactly 0) by the elimination loop.
-        returns, covmat = three_assets
+    def test_dominated_asset_eliminated(self, five_assets_one_dominated):
+        # E has a strongly negative return; the optimizer zeroes it, the
+        # elimination loop drops it (weight exactly 0), and the remaining four
+        # re-optimise to weights that still sum to 1.
+        returns, covmat = five_assets_one_dominated
         w = allocate_msr(returns, covmat, CFG)
-        assert w["C"] == 0.0
+        assert w["E"] == 0.0
+        assert abs(w.sum() - 1.0) < 1e-6
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
