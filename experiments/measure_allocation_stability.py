@@ -207,3 +207,55 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
+                   predict_fn=None, annualize_fn=None, select_fn=None, seed_fn=None):
+    """Run `iterations` predict->allocate passes and collect the raw evidence.
+
+    Covariance (Ledoit-Wolf) and the selected-name set are deterministic and
+    computed once; only mu changes per iteration. The four *_fn arguments are
+    dependency-injection seams (default to the real implementations) so the loop
+    can be tested without importing torch.
+
+    Returns dict with DataFrames: 'mu' and 'weights' (iterations x selected),
+    'metrics' (iterations x [ret, vol, sharpe]), and 'selected' (list).
+    """
+    if predict_fn is None or annualize_fn is None:
+        from transformer_model import train_and_predict, annualize_expected_returns
+        predict_fn = predict_fn or train_and_predict
+        annualize_fn = annualize_fn or annualize_expected_returns
+    if select_fn is None:
+        select_fn = select_stocks
+    if seed_fn is None:
+        seed_fn = seed_everything
+
+    ppy = cfg["periods_per_year"]
+    rf = cfg["rf_rate"]
+
+    covmat = pd.DataFrame(
+        LedoitWolf().fit(rets).covariance_, index=rets.columns, columns=rets.columns
+    )
+    selected = select_fn(prices, rets, cfg)
+    cov_sel = covmat.loc[selected, selected]
+
+    mu_records, weight_records, metric_records = [], [], []
+    for i in range(1, iterations + 1):
+        seed_fn(seed + i)
+        preds = predict_fn(rets, cfg, n_runs=transformer_runs, verbose=False)
+        mu = annualize_fn(preds, ppy)
+        mu_sel = mu.loc[selected]
+        weights = allocate_msr(mu_sel, cov_sel, cfg)
+        survivors = weights[weights.abs() > 1e-9]
+        metrics = portfolio_metrics(survivors, mu_sel, cov_sel, rf)
+
+        mu_records.append(mu_sel)
+        weight_records.append(weights)
+        metric_records.append(metrics)
+
+    return {
+        "mu": pd.DataFrame(mu_records).reset_index(drop=True),
+        "weights": pd.DataFrame(weight_records).reset_index(drop=True),
+        "metrics": pd.DataFrame(metric_records),
+        "selected": selected,
+    }

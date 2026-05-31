@@ -249,3 +249,68 @@ class TestSelectStocks:
         cfg = {"ma_terms": 10, "signal_min_count": 3}
         selected = select_stocks(prices, returns, cfg)
         assert all(name in returns.columns for name in selected)
+
+
+from experiments.measure_allocation_stability import run_experiment
+
+
+class TestRunExperiment:
+    def _inputs(self):
+        np.random.seed(1)
+        n = 40
+        idx = pd.date_range("2023-01-01", periods=n, freq="W-SUN")
+        cols = ["A", "B", "C", "D"]
+        rets = pd.DataFrame(np.random.normal(0.002, 0.02, (n, 4)), index=idx, columns=cols)
+        prices = (1 + rets).cumprod() * 100
+        cfg = {
+            "rf_rate": 0.0, "max_weight": 0.6, "min_weight": 0.05,
+            "periods_per_year": 12,
+        }
+        return prices, rets, cfg
+
+    def _stubs(self):
+        # predict_fn: returns 2 forecast periods that drift each call so mu varies.
+        state = {"k": 0}
+
+        def predict_fn(rets, cfg, n_runs=None, verbose=True):
+            state["k"] += 1
+            base = np.array([0.01, 0.008, 0.006, 0.002])
+            shift = 0.001 * state["k"]
+            vals = np.vstack([base + shift, base + shift])
+            return pd.DataFrame(vals, columns=rets.columns)
+
+        def annualize_fn(preds, ppy):
+            return preds.mean(axis=0)
+
+        def select_fn(prices, rets, cfg):
+            return ["A", "B", "C", "D"]
+
+        def seed_fn(seed):
+            pass
+
+        return predict_fn, annualize_fn, select_fn, seed_fn
+
+    def test_output_shapes(self):
+        prices, rets, cfg = self._inputs()
+        predict_fn, annualize_fn, select_fn, seed_fn = self._stubs()
+        result = run_experiment(
+            prices, rets, cfg, iterations=5, transformer_runs=2, seed=0,
+            predict_fn=predict_fn, annualize_fn=annualize_fn,
+            select_fn=select_fn, seed_fn=seed_fn,
+        )
+        assert result["weights"].shape == (5, 4)
+        assert result["mu"].shape == (5, 4)
+        assert set(result["metrics"].columns) == {"ret", "vol", "sharpe"}
+        assert len(result["metrics"]) == 5
+        assert result["selected"] == ["A", "B", "C", "D"]
+
+    def test_weights_rows_sum_to_one(self):
+        prices, rets, cfg = self._inputs()
+        predict_fn, annualize_fn, select_fn, seed_fn = self._stubs()
+        result = run_experiment(
+            prices, rets, cfg, iterations=3, transformer_runs=2, seed=0,
+            predict_fn=predict_fn, annualize_fn=annualize_fn,
+            select_fn=select_fn, seed_fn=seed_fn,
+        )
+        sums = result["weights"].sum(axis=1)
+        assert np.allclose(sums, 1.0, atol=1e-6)
