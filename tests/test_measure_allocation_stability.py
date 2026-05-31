@@ -81,3 +81,30 @@ class TestAllocateMsr:
         w = allocate_msr(returns, covmat, CFG)
         assert w["E"] == 0.0
         assert abs(w.sum() - 1.0) < 1e-6
+
+
+from experiments.measure_allocation_stability import portfolio_metrics
+
+
+class TestPortfolioMetrics:
+    def test_known_values(self):
+        weights = pd.Series({"A": 0.5, "B": 0.5})
+        returns = pd.Series({"A": 0.10, "B": 0.20})
+        covmat = pd.DataFrame(
+            np.diag([0.04, 0.09]), index=["A", "B"], columns=["A", "B"]
+        )
+        m = portfolio_metrics(weights, returns, covmat, rf=0.02)
+        assert abs(m["ret"] - 0.15) < 1e-10
+        # vol = sqrt(0.25*0.04 + 0.25*0.09) = sqrt(0.0325)
+        assert abs(m["vol"] - math.sqrt(0.0325)) < 1e-10
+        assert abs(m["sharpe"] - (0.15 - 0.02) / math.sqrt(0.0325)) < 1e-10
+
+    def test_uses_only_weight_index_names(self):
+        # returns/covmat carry an extra name C that weights omit; it must be ignored.
+        weights = pd.Series({"A": 0.5, "B": 0.5})
+        returns = pd.Series({"A": 0.10, "B": 0.20, "C": 9.0})
+        covmat = pd.DataFrame(
+            np.diag([0.04, 0.09, 1.0]), index=["A", "B", "C"], columns=["A", "B", "C"]
+        )
+        m = portfolio_metrics(weights, returns, covmat, rf=0.0)
+        assert abs(m["ret"] - 0.15) < 1e-10

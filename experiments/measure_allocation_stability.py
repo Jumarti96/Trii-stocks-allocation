@@ -80,3 +80,19 @@ def allocate_msr(returns, covmat, cfg):
     weights = pd.Series(0.0, index=names)
     weights[optimal.index] = optimal["Weights"]
     return weights
+
+
+def portfolio_metrics(weights, returns, covmat, rf):
+    """Portfolio return/vol/Sharpe over the names in `weights.index`.
+
+    Computed exactly as msr_tuned's objective does (annualised mu against the
+    per-period covariance) so the numbers match the optimiser's convention.
+    """
+    names = list(weights.index)
+    w = weights.values
+    r = returns.loc[names].values
+    C = covmat.loc[names, names].values
+    ret = float(rk.portfolio_return(w, r))
+    vol = float(rk.portfolio_vol(w, C))
+    sharpe = (ret - rf) / vol if vol > 0 else float("nan")
+    return {"ret": ret, "vol": vol, "sharpe": sharpe}
