@@ -22,6 +22,7 @@ warnings.filterwarnings('ignore')
 
 import pandas as pd
 import risk_kit as rk
+from transformer_model import annualize_period_return
 
 from config import load_config, PATHS, BASE_DIR
 
@@ -62,22 +63,28 @@ def main():
         riskfree_rate=rf_rate
     ).loc['PORTFOLIO']
 
+    # expected_returns from step 2 are PER-PERIOD; compound-annualise for display only.
+    expected_annual = annualize_period_return(expected_returns, periods_per_year)
+
     output = pd.DataFrame({
         'Portfolio Weight':                       weights_series.round(4),
-        'Expected Annual Return':                 expected_returns[weights_series.index].round(4),
+        'Expected Annual Return':                 expected_annual[weights_series.index].round(4),
         'Current Price':                          current_prices[weights_series.index].round(4),
         f'Forecasted Price ({last_future_date})': forecasted_prices[weights_series.index].round(4),
         'Investment (COP k)':                     cop_per_stock,
     }).sort_values('Portfolio Weight', ascending=False)
 
+    # Per-period mu compounded over the forecast horizon (equals the old
+    # (1+annual)^(periods_to_forecast/ppy) expression, now in per-period units).
     portfolio_forecasted = (
         cop_per_stock
-        * (1 + expected_returns[weights_series.index]) ** (periods_to_forecast / periods_per_year)
+        * (1 + expected_returns[weights_series.index]) ** periods_to_forecast
     ).sum().round(2)
 
+    portfolio_period_return = (weights_series * expected_returns[weights_series.index]).sum()
     portfolio_row = pd.DataFrame({
         'Portfolio Weight':                       [1],
-        'Expected Annual Return':                 [round((weights_series * expected_returns[weights_series.index]).sum(), 4)],
+        'Expected Annual Return':                 [round(annualize_period_return(portfolio_period_return, periods_per_year), 4)],
         'Current Price':                          [cop_per_stock.sum()],
         f'Forecasted Price ({last_future_date})': [portfolio_forecasted],
         'Investment (COP k)':                     [cop_per_stock.sum()],
