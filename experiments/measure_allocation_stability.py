@@ -321,3 +321,42 @@ def write_outputs(result, outdir):
     with open(paths["summary"], "w") as f:
         f.write(format_summary(result))
     return paths
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--iterations", type=int, default=30,
+                        help="Number of predict->allocate runs (default 30)")
+    parser.add_argument("--transformer-runs", type=int, default=10,
+                        help="n_runs passed to train_and_predict per iteration (default 10)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Base seed; iteration i uses seed+i (default 0)")
+    parser.add_argument("--outdir", type=str,
+                        default=os.path.join(BASE_DIR, "experiments", "results"),
+                        help="Directory for output CSVs and summary")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    prices = pd.read_csv(PATHS["01_prices"], index_col=0)
+    rets = pd.read_csv(PATHS["01_returns"], index_col=0)
+
+    print(f"Universe: {rets.shape[1]} stocks | iterations={args.iterations} | "
+          f"transformer-runs={args.transformer_runs} | seed={args.seed}")
+
+    result = run_experiment(
+        prices, rets, cfg,
+        iterations=args.iterations,
+        transformer_runs=args.transformer_runs,
+        seed=args.seed,
+    )
+    paths = write_outputs(result, args.outdir)
+
+    print()
+    print(format_summary(result))
+    print(f"\nSaved: {paths['weights']}\n       {paths['metrics']}\n       {paths['summary']}")
+
+
+if __name__ == "__main__":
+    main()
