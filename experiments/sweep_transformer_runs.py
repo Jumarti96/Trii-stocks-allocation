@@ -164,3 +164,34 @@ def write_sweep_outputs(summary, outdir):
     with open(paths["summary"], "w") as f:
         f.write(format_sweep_summary(summary))
     return paths
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--iterations", type=int, default=30)
+    parser.add_argument("--grid", type=str, default="10,20,30,40,50,100",
+                        help="Comma-separated n_transformer_runs values")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--outdir", type=str,
+                        default=os.path.join(BASE_DIR, "experiments", "results", "sweep"))
+    args = parser.parse_args()
+
+    grid = [int(x) for x in args.grid.split(",")]
+    cfg = load_config()
+    prices = pd.read_csv(PATHS["01_prices"], index_col=0)
+    rets = pd.read_csv(PATHS["01_returns"], index_col=0)
+
+    print(f"Sweep grid={grid} | iterations={args.iterations} | seed={args.seed}")
+    result = run_sweep(prices, rets, cfg, iterations=args.iterations, grid=grid, seed=args.seed)
+    summary = summarize_sweep(result)
+    paths = write_sweep_outputs(summary, args.outdir)
+
+    print()
+    print(format_sweep_summary(summary))
+    print(f"\nSaved: {paths['metrics']}\n       {paths['summary']}")
+
+
+if __name__ == "__main__":
+    main()
