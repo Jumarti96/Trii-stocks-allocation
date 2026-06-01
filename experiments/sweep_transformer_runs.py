@@ -132,3 +132,35 @@ def summarize_sweep(result, rel_tol=0.05):
             break
 
     return {"table": table, "converged_n": converged_n, "rel_tol": rel_tol}
+
+
+def format_sweep_summary(summary):
+    """Human-readable convergence report from a summarize_sweep result."""
+    table = summary["table"]
+    conv = summary["converged_n"]
+    tol = summary["rel_tol"]
+
+    lines = ["Transformer-runs convergence sweep", ""]
+    lines.append(table.to_string(float_format=lambda v: f"{v:.5f}"))
+    lines.append("")
+    if conv is None:
+        lines.append(f"No grid point met the <{tol:.0%} relative-delta convergence criterion.")
+    else:
+        lines.append(
+            f"Converged at n={conv} (turnover, jaccard, and mean_mu_std each changed "
+            f"<{tol:.0%} vs the previous grid point)."
+        )
+    return "\n".join(lines)
+
+
+def write_sweep_outputs(summary, outdir):
+    """Write sweep_metrics.csv and sweep_summary.txt; return their paths."""
+    os.makedirs(outdir, exist_ok=True)
+    paths = {
+        "metrics": os.path.join(outdir, "sweep_metrics.csv"),
+        "summary": os.path.join(outdir, "sweep_summary.txt"),
+    }
+    summary["table"][["turnover", "jaccard", "mean_mu_std"]].to_csv(paths["metrics"])
+    with open(paths["summary"], "w") as f:
+        f.write(format_sweep_summary(summary))
+    return paths

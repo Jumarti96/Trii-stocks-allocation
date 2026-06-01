@@ -128,3 +128,24 @@ class TestSummarizeSweep:
             10: _mk([{"A": 1.0, "B": 0.0}, {"A": 0.0, "B": 1.0}],
                     [{"A": 0.2, "B": 0.0}, {"A": 0.0, "B": 0.2}])}}
         assert summarize_sweep(one)["converged_n"] is None
+
+
+from experiments.sweep_transformer_runs import format_sweep_summary, write_sweep_outputs
+
+
+class TestSweepOutputs:
+    def test_format_mentions_converged_n(self):
+        text = format_sweep_summary(summarize_sweep(_converged_result()))
+        assert "n=30" in text
+
+    def test_format_handles_no_convergence(self):
+        text = format_sweep_summary(summarize_sweep(_decreasing_result()))
+        assert "No grid point" in text
+
+    def test_write_outputs_creates_files(self, tmp_path):
+        paths = write_sweep_outputs(summarize_sweep(_decreasing_result()), str(tmp_path))
+        assert os.path.exists(paths["metrics"])
+        assert os.path.exists(paths["summary"])
+        reloaded = pd.read_csv(paths["metrics"], index_col=0)
+        assert list(reloaded.columns) == ["turnover", "jaccard", "mean_mu_std"]
+        assert list(reloaded.index) == [10, 20, 30]
