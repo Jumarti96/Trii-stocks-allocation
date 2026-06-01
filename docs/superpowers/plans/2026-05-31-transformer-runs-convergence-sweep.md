@@ -476,8 +476,9 @@ def summarize_sweep(result, rel_tol=0.05):
         }
     table = pd.DataFrame(data).T[cols]
     table.index.name = "n"
+    delta_names = {"turnover": "d_turnover", "jaccard": "d_jaccard", "mean_mu_std": "d_mu_std"}
     for c in cols:
-        table[f"d_{c}"] = table[c].diff()
+        table[delta_names[c]] = table[c].diff()
 
     converged_n = None
     for prev, n in zip(grid[:-1], grid[1:]):
