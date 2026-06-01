@@ -47,6 +47,7 @@ def load_config(config_path=None):
     cfg['date_offset']  = pd.Timedelta(days=7) if interval == '1wk' else pd.DateOffset(months=1)
     cfg['future_freq']  = 'W-SUN' if interval == '1wk' else 'MS'
     cfg['time_window']  = cfg['time_window'] or cfg['periods_per_year']
+    cfg['rf_period']    = (1 + cfg['rf_rate']) ** (1 / cfg['periods_per_year']) - 1
 
     PATHS['05_report'] = os.path.join(BASE_DIR, cfg['output_path'])
 

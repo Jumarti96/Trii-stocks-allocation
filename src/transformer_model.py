@@ -97,20 +97,30 @@ def weighted_mean_return(preds_df, lambda_=0.2):
     })
 
 
+def annualize_period_return(period_returns, periods_per_year):
+    """Compound-annualise a per-period return (scalar or Series): (1+r)^ppy - 1.
+
+    Display-only helper: used by the report to present per-period forecasts as
+    annual figures. It is NOT used to build the vector fed to the optimiser.
+    """
+    return (1 + period_returns) ** periods_per_year - 1
+
+
 def annualize_expected_returns(preds_df, periods_per_year, lambda_=0.2):
     """Exponential-decay-weighted annualised expected return per column of preds_df.
 
-    Used by step 2 and the train-universe comparison so both annualise identically.
+    Used by the train-universe comparison experiment and the report's display path.
     """
     wmr = weighted_mean_return(preds_df, lambda_=lambda_)
-    return (1 + wmr) ** periods_per_year - 1
+    return annualize_period_return(wmr, periods_per_year)
 
 
-def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
-    """Train n_runs Transformers on returns_df and return averaged, winsorised forecasts.
+def train_runs(returns_df, cfg, n_runs=None, verbose=True):
+    """Train n_runs Transformers and return the raw per-run forecasts.
 
-    Pure with respect to the filesystem: no reads/writes, no date handling. The caller
-    supplies returns_df (rows = periods, columns = stocks) and assigns dates to the result.
+    Returns an np.ndarray of shape (n_runs, periods_to_forecast, n_stocks) — no
+    averaging, no winsorisation. train_and_predict composes averaging + winsorisation
+    on top; the convergence sweep averages prefixes of these runs.
     """
     time_window         = cfg['time_window']
     periods_to_forecast = cfg['periods_to_forecast']
@@ -173,17 +183,24 @@ def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
 
         all_preds_runs.append(np.array(run_preds))
 
-    preds = np.mean(all_preds_runs, axis=0)
-    if verbose:
-        print(f"Predictions averaged across {n_runs} runs.")
+    return np.array(all_preds_runs)
 
-    preds_df = pd.DataFrame(preds, columns=returns_df.columns)
 
-    # Winsorise at the 1st-99th percentile of historical returns
+def winsorize_to_history(preds_df, returns_df):
+    """Clip forecasts to the 1st-99th percentile of historical returns."""
     lower_w = np.percentile(returns_df.values, 1)
     upper_w = np.percentile(returns_df.values, 99)
-    preds_df = preds_df.clip(lower=lower_w, upper=upper_w)
-    if verbose:
-        print(f"Predictions winsorised to [{lower_w:.4f}, {upper_w:.4f}].")
+    return preds_df.clip(lower=lower_w, upper=upper_w)
 
-    return preds_df
+
+def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
+    """Train n_runs Transformers on returns_df and return averaged, winsorised forecasts.
+
+    Pure with respect to the filesystem: no reads/writes, no date handling. The caller
+    supplies returns_df (rows = periods, columns = stocks) and assigns dates to the result.
+    """
+    runs = train_runs(returns_df, cfg, n_runs=n_runs, verbose=verbose)
+    if verbose:
+        print(f"Predictions averaged across {runs.shape[0]} runs.")
+    preds_df = pd.DataFrame(runs.mean(axis=0), columns=returns_df.columns)
+    return winsorize_to_history(preds_df, returns_df)
