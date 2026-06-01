@@ -94,3 +94,41 @@ def run_sweep(prices, rets, cfg, iterations, grid, seed,
         for n in grid
     }
     return {"selected": selected, "by_n": by_n}
+
+
+def summarize_sweep(result, rel_tol=0.05):
+    """Per-n turnover / Jaccard / mean per-stock mu std, with consecutive-n deltas and the
+    first n where all three change < rel_tol relative to the previous grid point."""
+    grid = sorted(result["by_n"].keys())
+    cols = ["turnover", "jaccard", "mean_mu_std"]
+
+    data = {}
+    for n in grid:
+        wdf = result["by_n"][n]["weights"]
+        mdf = result["by_n"][n]["mu"]
+        data[n] = {
+            "turnover": float(mean_turnover(wdf)),
+            "jaccard": float(mean_jaccard(wdf)),
+            "mean_mu_std": float(weight_dispersion(mdf).mean()),
+        }
+    table = pd.DataFrame(data).T[cols]
+    table.index.name = "n"
+    delta_names = {"turnover": "d_turnover", "jaccard": "d_jaccard", "mean_mu_std": "d_mu_std"}
+    for c in cols:
+        table[delta_names[c]] = table[c].diff()
+
+    converged_n = None
+    for prev, n in zip(grid[:-1], grid[1:]):
+        ok = True
+        for c in cols:
+            base = table.loc[prev, c]
+            if base == 0:
+                continue
+            if abs(table.loc[n, c] - base) / abs(base) >= rel_tol:
+                ok = False
+                break
+        if ok:
+            converged_n = n
+            break
+
+    return {"table": table, "converged_n": converged_n, "rel_tol": rel_tol}
