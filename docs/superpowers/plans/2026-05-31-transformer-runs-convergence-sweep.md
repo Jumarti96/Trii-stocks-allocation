@@ -256,7 +256,7 @@ class TestRunSweep:
         tr, wz, pm, sel, sd = _stubs()
         res = run_sweep(prices, rets, cfg, iterations=3, grid=[10, 20, 50], seed=0,
                         train_runs_fn=tr, winsorize_fn=wz, period_mu_fn=pm,
-                        select_fn=sel, seed_fn=sd)
+                        select_fn=sel, seed_fn=sd, verbose=False)
         assert sorted(res["by_n"].keys()) == [10, 20, 50]
         assert res["selected"] == ["A", "B", "C", "D"]
         for n in (10, 20, 50):
@@ -269,7 +269,7 @@ class TestRunSweep:
         tr, wz, pm, sel, sd = _stubs()
         res = run_sweep(prices, rets, cfg, iterations=2, grid=[10, 20], seed=0,
                         train_runs_fn=tr, winsorize_fn=wz, period_mu_fn=pm,
-                        select_fn=sel, seed_fn=sd)
+                        select_fn=sel, seed_fn=sd, verbose=False)
         assert np.allclose(res["by_n"][10]["mu"].values, (10 - 1) / 2)
         assert np.allclose(res["by_n"][20]["mu"].values, (20 - 1) / 2)
 ```
@@ -296,6 +296,7 @@ See docs/superpowers/specs/2026-05-31-transformer-runs-convergence-sweep-design.
 import argparse
 import os
 import sys
+import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -319,13 +320,14 @@ from measure_allocation_stability import (
 
 def run_sweep(prices, rets, cfg, iterations, grid, seed,
               train_runs_fn=None, winsorize_fn=None, period_mu_fn=None,
-              select_fn=None, seed_fn=None):
+              select_fn=None, seed_fn=None, verbose=True):
     """Run `iterations` passes; per pass, train max(grid) runs once and derive mu(n)
     from the first-n prefix for each n in grid. Returns
     {"selected": [...], "by_n": {n: {"mu": DataFrame, "weights": DataFrame}}}.
 
     The five *_fn arguments are dependency-injection seams (lazy real defaults) so the
-    loop is unit-testable without torch.
+    loop is unit-testable without torch. With verbose=True, prints per-iteration elapsed
+    time and ETA (streams to the log when run in the background).
     """
     if train_runs_fn is None or winsorize_fn is None or period_mu_fn is None:
         from transformer_model import train_runs, winsorize_to_history, weighted_mean_return
@@ -348,6 +350,7 @@ def run_sweep(prices, rets, cfg, iterations, grid, seed,
 
     mu_recs = {n: [] for n in grid}
     w_recs = {n: [] for n in grid}
+    start = time.time()
     for i in range(1, iterations + 1):
         seed_fn(seed + i)
         runs = train_runs_fn(rets, cfg, n_runs=max_n)
@@ -359,6 +362,10 @@ def run_sweep(prices, rets, cfg, iterations, grid, seed,
             weights = allocate_msr(mu_sel, cov_sel, cfg)
             mu_recs[n].append(mu_sel)
             w_recs[n].append(weights)
+        if verbose:
+            elapsed = time.time() - start
+            eta = elapsed / i * (iterations - i)
+            print(f"[iter {i}/{iterations}] elapsed {elapsed:6.0f}s | ETA {eta:6.0f}s", flush=True)
 
     by_n = {
         n: {
@@ -619,8 +626,10 @@ if __name__ == "__main__":
 
 - [ ] **Step 3: Verify the CLI parses** — `"C:/Users/jumar/AppData/Local/Microsoft/WindowsApps/python.exe" experiments/sweep_transformer_runs.py --help` — Expected: usage with `--iterations`, `--grid`, `--seed`, `--outdir`; exit 0.
 
-- [ ] **Step 4: Manual sweep run (controller, GPU-heavy ~3000 trainings).** Run:
-`"C:/Users/jumar/AppData/Local/Microsoft/WindowsApps/python.exe" experiments/sweep_transformer_runs.py --iterations 30 --grid 10,20,30,40,50,100 --seed 0 --outdir experiments/results/sweep`
+- [ ] **Step 4: Manual sweep run (controller, GPU-heavy ~3000 trainings).** Run in the background
+with a log so progress is trackable (`run_sweep` prints `[iter i/30] elapsed Xs | ETA Ys` per
+iteration; `Read` the log any time to report status):
+`"C:/Users/jumar/AppData/Local/Microsoft/WindowsApps/python.exe" experiments/sweep_transformer_runs.py --iterations 30 --grid 10,20,30,40,50,100 --seed 0 --outdir experiments/results/sweep > experiments/results/sweep_run.log 2>&1`
 Then read `experiments/results/sweep/sweep_summary.txt`. Expected: `mean_mu_std` decreases monotonically with `n`; turnover/Jaccard trend toward a plateau; a converged-`n` is reported (or "no grid point" if the descent is still steep at 100). Report the table and the convergence point.
 
 - [ ] **Step 5: Commit**

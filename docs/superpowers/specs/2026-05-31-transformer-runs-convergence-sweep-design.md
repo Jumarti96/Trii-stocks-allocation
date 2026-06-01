@@ -71,6 +71,9 @@ period_mu_fn=None, select_fn=None, seed_fn=None)`**
 - The five `*_fn` arguments are dependency-injection seams (lazy real defaults: `train_runs`,
   `winsorize_to_history`, `weighted_mean_return`, `select_stocks`, `seed_everything`) so the loop
   is unit-testable without torch.
+- A `verbose=True` flag prints a per-iteration progress line (`[iter i/N] elapsed Xs | ETA Ys`,
+  flushed) so a long run can be tracked live via its background log. (No checkpoint/resume — a
+  stopped run restarts from scratch; out of scope by decision.)
 
 **`summarize_sweep(result, rel_tol=0.05)`** — for each `n` (ascending): `mean_turnover(weights_df)`,
 `mean_jaccard(weights_df)`, and `mean_mu_std = weight_dispersion(mu_df).mean()` (mean per-stock
