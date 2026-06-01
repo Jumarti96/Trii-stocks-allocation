@@ -42,3 +42,51 @@ def test_annualize_expected_returns_delegates_to_helper():
     ppy = 12
     expected = annualize_period_return(weighted_mean_return(preds), ppy)
     pd.testing.assert_series_equal(annualize_expected_returns(preds, ppy), expected)
+
+
+import numpy as np
+import torch
+from transformer_model import train_runs, winsorize_to_history, train_and_predict
+
+
+def _tiny_cfg():
+    return {"time_window": 6, "periods_to_forecast": 2, "n_transformer_runs": 2}
+
+
+def _tiny_rets(seed):
+    rng = np.random.RandomState(seed)
+    return pd.DataFrame(rng.normal(0, 0.02, (30, 3)), columns=["A", "B", "C"])
+
+
+def test_train_runs_shape():
+    runs = train_runs(_tiny_rets(1), _tiny_cfg(), n_runs=2, verbose=False)
+    # (n_runs, periods_to_forecast, n_stocks)
+    assert runs.shape == (2, 2, 3)
+
+
+def test_winsorize_to_history_clips_to_percentiles():
+    rets = pd.DataFrame({"A": [-0.10, 0.0, 0.10, 0.05, -0.05]})
+    preds = pd.DataFrame({"A": [0.5, -0.5, 0.0]})
+    out = winsorize_to_history(preds, rets)
+    lo = np.percentile(rets.values, 1)
+    hi = np.percentile(rets.values, 99)
+    assert out["A"].max() <= hi + 1e-12
+    assert out["A"].min() >= lo - 1e-12
+
+
+def test_train_and_predict_composes_from_train_runs():
+    # Under the same seed, train_and_predict == winsorize(mean(train_runs)).
+    cfg = _tiny_cfg()
+    rets = _tiny_rets(0)
+
+    def seeded(fn):
+        torch.manual_seed(123)
+        np.random.seed(123)
+        return fn()
+
+    out_direct = seeded(lambda: train_and_predict(rets, cfg, n_runs=2, verbose=False))
+    runs = seeded(lambda: train_runs(rets, cfg, n_runs=2, verbose=False))
+    out_compose = winsorize_to_history(
+        pd.DataFrame(runs.mean(axis=0), columns=rets.columns), rets
+    )
+    pd.testing.assert_frame_equal(out_direct, out_compose)
