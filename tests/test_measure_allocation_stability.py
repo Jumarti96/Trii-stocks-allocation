@@ -452,7 +452,7 @@ class TestApplyConsensusFloor:
         assert abs(out.sum() - 1.0) < 1e-9
 
 
-from experiments.measure_allocation_stability import resampled_allocate, overlap_stats
+from experiments.measure_allocation_stability import resampled_allocate
 
 
 @pytest.fixture
