@@ -450,3 +450,65 @@ class TestApplyConsensusFloor:
         out = apply_consensus_floor(w, min_weight=0.9)
         assert (out.abs() > 0).sum() == 2
         assert abs(out.sum() - 1.0) < 1e-9
+
+
+from experiments.measure_allocation_stability import resampled_allocate
+
+
+@pytest.fixture
+def five_asset_cov():
+    names = ["A", "B", "C", "D", "E"]
+    return pd.DataFrame(np.diag([0.04] * 5), index=names, columns=names)
+
+
+def _mu(values):
+    return pd.Series(dict(zip(["A", "B", "C", "D", "E"], values)))
+
+
+class TestResampledAllocate:
+    def test_consensus_sums_to_one_and_covers_all_names(self, five_asset_cov):
+        # Three draws, each favouring a different leader -> diffuse but valid consensus.
+        mus = [
+            _mu([0.20, 0.02, 0.02, 0.02, 0.02]),
+            _mu([0.02, 0.20, 0.02, 0.02, 0.02]),
+            _mu([0.02, 0.02, 0.20, 0.02, 0.02]),
+        ]
+        consensus, diag = resampled_allocate(mus, five_asset_cov, CFG)
+        assert abs(consensus.sum() - 1.0) < 1e-6
+        assert set(consensus.index) == {"A", "B", "C", "D", "E"}
+
+    def test_consensus_respects_max_weight_implicitly(self, five_asset_cov):
+        # Averaging corner solutions cannot exceed the per-draw max_weight.
+        mus = [_mu([0.20, 0.02, 0.02, 0.02, 0.02])] * 3
+        consensus, _ = resampled_allocate(mus, five_asset_cov, CFG)
+        assert (consensus <= CFG["max_weight"] + 1e-6).all()
+
+    def test_diagnostic_reports_freq_and_mean_weight(self, five_asset_cov):
+        # A leads every draw -> freq 1.0 and the largest mean raw weight.
+        mus = [
+            _mu([0.20, 0.02, 0.02, 0.02, 0.02]),
+            _mu([0.20, 0.02, 0.02, 0.02, 0.02]),
+            _mu([0.20, 0.02, 0.02, 0.02, 0.02]),
+        ]
+        _, diag = resampled_allocate(mus, five_asset_cov, CFG)
+        assert set(diag.columns) == {"freq", "mean_raw_weight"}
+        assert abs(diag.loc["A", "freq"] - 1.0) < 1e-9
+        assert diag["mean_raw_weight"].idxmax() == "A"
+
+    def test_consensus_smooths_rotating_leaders(self, five_asset_cov):
+        # No single name dominates when the leader rotates: the top consensus weight
+        # is well below what a single-draw corner solution would give that name.
+        mus = [
+            _mu([0.20, 0.02, 0.02, 0.02, 0.02]),
+            _mu([0.02, 0.20, 0.02, 0.02, 0.02]),
+            _mu([0.02, 0.02, 0.20, 0.02, 0.02]),
+        ]
+        single, _ = resampled_allocate([mus[0]], five_asset_cov, CFG)
+        consensus, _ = resampled_allocate(mus, five_asset_cov, CFG)
+        assert consensus.max() < single.max()
+
+    def test_eliminate_per_draw_toggle_runs(self, five_asset_cov):
+        # The comparison arm uses the full allocate_msr loop per draw; still valid.
+        mus = [_mu([0.20, 0.02, 0.02, 0.02, 0.02])] * 3
+        consensus, _ = resampled_allocate(mus, five_asset_cov, CFG, eliminate_per_draw=True)
+        assert abs(consensus.sum() - 1.0) < 1e-6

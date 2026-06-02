@@ -106,6 +106,47 @@ def apply_consensus_floor(weights, min_weight):
     return out
 
 
+def resampled_allocate(per_run_mu, covmat, cfg, eliminate_per_draw=False, eps=1e-9):
+    """Michaud resampled-efficiency consensus over a list of per-run mu vectors.
+
+    Each draw is optimised by raw msr_tuned (no elimination) so the continuous
+    conviction signal survives into the average; with eliminate_per_draw=True the
+    full allocate_msr loop is used per draw instead (the optional comparison arm).
+    The per-draw weight vectors are averaged and floored once via apply_consensus_floor
+    -- average-then-threshold, never threshold-then-average.
+
+    All mu vectors must share the same index (the selected names). covmat must cover
+    those names. Returns (consensus: Series over those names with dropped names at 0.0,
+    diagnostic: DataFrame indexed by name with columns 'freq' = fraction of draws that
+    gave the name a nonzero raw weight and 'mean_raw_weight' = mean raw weight).
+    """
+    rf = cfg["rf_period"]
+    max_w = cfg["max_weight"]
+    ppy = cfg["periods_per_year"]
+    min_w = cfg["min_weight"]
+
+    rows = []
+    for mu_i in per_run_mu:
+        cov_i = covmat.loc[mu_i.index, mu_i.index]
+        if eliminate_per_draw:
+            w_i = allocate_msr(mu_i, cov_i, cfg)
+        else:
+            arr = rk.msr_tuned(
+                riskfree_rate=rf, returns=mu_i, covmat=cov_i,
+                max_weight=max_w, periods_per_year=ppy, debug=False,
+            )
+            w_i = pd.Series(arr, index=mu_i.index)
+        rows.append(w_i)
+
+    raw = pd.DataFrame(rows).reset_index(drop=True)
+    consensus = apply_consensus_floor(raw.mean(axis=0), min_w)
+    diagnostic = pd.DataFrame({
+        "freq": (raw.abs() > eps).mean(axis=0),
+        "mean_raw_weight": raw.mean(axis=0),
+    })
+    return consensus, diagnostic
+
+
 def portfolio_metrics(weights, returns, covmat, rf):
     """Portfolio return/vol/Sharpe over the names in `weights.index`.
 
