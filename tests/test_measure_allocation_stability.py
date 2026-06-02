@@ -545,3 +545,90 @@ class TestOverlapStats:
         s = overlap_stats(df)
         assert s["shared"] is None
         assert s["held"] == 2.0
+
+
+from experiments.measure_allocation_stability import run_paired_experiment
+
+
+class TestRunPairedExperiment:
+    def _inputs(self):
+        np.random.seed(2)
+        n = 40
+        idx = pd.date_range("2023-01-01", periods=n, freq="W-SUN")
+        cols = ["A", "B", "C", "D", "E"]
+        rets = pd.DataFrame(np.random.normal(0.002, 0.02, (n, 5)), index=idx, columns=cols)
+        prices = (1 + rets).cumprod() * 100
+        cfg = {
+            "rf_rate": 0.0, "rf_period": 0.0, "max_weight": 0.6, "min_weight": 0.05,
+            "periods_per_year": 12,
+        }
+        return prices, rets, cfg
+
+    def _stubs(self):
+        # runs_fn returns a LIST of N per-run forecast DataFrames (periods x stocks).
+        # Each run favours a different leader and the leadership rotates per iteration,
+        # so the current (averaged) and Michaud (consensus) arms genuinely differ.
+        state = {"k": 0}
+        cols = ["A", "B", "C", "D", "E"]
+
+        def runs_fn(rets, cfg, n_runs=None, verbose=True):
+            state["k"] += 1
+            n_runs = n_runs or 3
+            runs = []
+            for r in range(n_runs):
+                vals = np.full(5, 0.004)
+                leader = (state["k"] + r) % 5
+                vals[leader] = 0.02
+                runs.append(pd.DataFrame(np.vstack([vals, vals]), columns=cols))
+            return runs
+
+        def period_mu_fn(preds):
+            return preds.mean(axis=0)
+
+        def select_fn(prices, rets, cfg):
+            return ["A", "B", "C", "D", "E"]
+
+        def seed_fn(seed):
+            pass
+
+        return runs_fn, period_mu_fn, select_fn, seed_fn
+
+    def _run(self, iterations=4, transformer_runs=3):
+        prices, rets, cfg = self._inputs()
+        runs_fn, period_mu_fn, select_fn, seed_fn = self._stubs()
+        return run_paired_experiment(
+            prices, rets, cfg, iterations=iterations, transformer_runs=transformer_runs,
+            seed=0, runs_fn=runs_fn, period_mu_fn=period_mu_fn,
+            select_fn=select_fn, seed_fn=seed_fn,
+        )
+
+    def test_returns_both_arms_and_selected(self):
+        result = self._run()
+        assert set(result.keys()) == {"current", "michaud", "selected"}
+        assert result["selected"] == ["A", "B", "C", "D", "E"]
+
+    def test_current_arm_shapes(self):
+        result = self._run(iterations=4)
+        assert result["current"]["weights"].shape == (4, 5)
+        assert len(result["current"]["metrics"]) == 4
+        assert set(result["current"]["metrics"].columns) == {"ret", "vol", "sharpe"}
+
+    def test_michaud_arm_shapes_and_diagnostic(self):
+        result = self._run(iterations=4)
+        assert result["michaud"]["weights"].shape == (4, 5)
+        assert len(result["michaud"]["metrics"]) == 4
+        assert set(result["michaud"]["diagnostic"].columns) == {"freq", "mean_raw_weight"}
+
+    def test_both_arms_weights_sum_to_one(self):
+        result = self._run()
+        for arm in ("current", "michaud"):
+            sums = result[arm]["weights"].sum(axis=1)
+            assert np.allclose(sums, 1.0, atol=1e-6)
+
+    def test_arms_differ_with_rotating_leaders(self):
+        # The whole point: with rotating per-run leaders the consensus is not identical
+        # to the averaged-mu allocation, so the two weight matrices must differ.
+        result = self._run()
+        assert not np.allclose(
+            result["current"]["weights"].values, result["michaud"]["weights"].values
+        )

@@ -345,6 +345,80 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
     }
 
 
+def run_paired_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
+                          runs_fn=None, period_mu_fn=None, select_fn=None,
+                          seed_fn=None, eliminate_per_draw=False):
+    """Run `iterations` passes, deriving the current and Michaud arms from the SAME draws.
+
+    runs_fn(rets, cfg, n_runs, verbose) -> list of N per-run period-forecast DataFrames
+    (rows = periods, columns = stocks), already winsorised. The current arm averages the
+    runs into one mu and allocates once (today's pipeline); the Michaud arm optimises each
+    run's mu and averages the weights. Both arms' value metrics are scored against the same
+    averaged mu. The four *_fn arguments are dependency-injection seams (default to the real
+    implementations) so the loop runs without importing torch.
+
+    Returns {'current': {weights, metrics}, 'michaud': {weights, metrics, diagnostic},
+    'selected': [...]} where each weights frame is iterations x selected and metrics is
+    iterations x [ret, vol, sharpe]. 'diagnostic' is the per-name mean over iterations of
+    the cross-draw selection frequency and mean raw weight (the conviction-gradient view).
+    """
+    if runs_fn is None:
+        runs_fn = train_runs_as_preds
+    if period_mu_fn is None:
+        from transformer_model import weighted_mean_return
+        period_mu_fn = weighted_mean_return
+    if select_fn is None:
+        select_fn = select_stocks
+    if seed_fn is None:
+        seed_fn = seed_everything
+
+    rf = cfg["rf_period"]
+    covmat = pd.DataFrame(
+        LedoitWolf().fit(rets).covariance_, index=rets.columns, columns=rets.columns
+    )
+    selected = select_fn(prices, rets, cfg)
+    cov_sel = covmat.loc[selected, selected]
+
+    cur_w, cur_m = [], []
+    mic_w, mic_m, mic_diag = [], [], []
+    for i in range(1, iterations + 1):
+        seed_fn(seed + i)
+        runs = runs_fn(rets, cfg, n_runs=transformer_runs, verbose=False)
+
+        # Current arm: average runs -> one mu -> allocate once (today's pipeline).
+        preds_avg = sum(r.values for r in runs) / len(runs)
+        preds_avg = pd.DataFrame(preds_avg, columns=runs[0].columns)
+        mu_avg = period_mu_fn(preds_avg).loc[selected]
+        w_cur = allocate_msr(mu_avg, cov_sel, cfg)
+        s_cur = w_cur[w_cur.abs() > 1e-9]
+        cur_w.append(w_cur)
+        cur_m.append(portfolio_metrics(s_cur, mu_avg, cov_sel, rf))
+
+        # Michaud arm: per-run mu -> resampled consensus. Score against the SAME mu_avg.
+        per_run_mu = [period_mu_fn(r).loc[selected] for r in runs]
+        w_mic, diag = resampled_allocate(
+            per_run_mu, cov_sel, cfg, eliminate_per_draw=eliminate_per_draw
+        )
+        s_mic = w_mic[w_mic.abs() > 1e-9]
+        mic_w.append(w_mic)
+        mic_m.append(portfolio_metrics(s_mic, mu_avg, cov_sel, rf))
+        mic_diag.append(diag)
+
+    diagnostic = sum(d for d in mic_diag) / len(mic_diag)
+    return {
+        "current": {
+            "weights": pd.DataFrame(cur_w).reset_index(drop=True),
+            "metrics": pd.DataFrame(cur_m),
+        },
+        "michaud": {
+            "weights": pd.DataFrame(mic_w).reset_index(drop=True),
+            "metrics": pd.DataFrame(mic_m),
+            "diagnostic": diagnostic,
+        },
+        "selected": selected,
+    }
+
+
 def _fmt(v):
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "N/A"
