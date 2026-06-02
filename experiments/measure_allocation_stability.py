@@ -151,6 +151,35 @@ def resampled_allocate(per_run_mu, covmat, cfg, eliminate_per_draw=False, eps=1e
     return consensus, diagnostic
 
 
+def sample_mu_draws(mu_bar, covmat, n_periods, n_draws, spread, rng):
+    """Draw n_draws mu vectors from the canonical Michaud law N(mu_bar, spread**2 * Sigma / T).
+
+    The parametric (mechanism B) alternative to using one transformer run per draw: perturb a
+    well-estimated centre mu_bar by the classical standard error of an estimated mean, scaled by
+    the tunable knob `spread` (s). Reuses the optimiser's own Ledoit-Wolf Sigma -- nothing extra
+    to estimate.
+
+    mu_bar:    Series over the selected names (the averaged per-period forecast).
+    covmat:    DataFrame Ledoit-Wolf covariance over those same names (the optimiser's Sigma).
+    n_periods: T, the number of return periods backing Sigma (sets the sampling-error scale).
+    n_draws:   K, how many mu vectors to sample.
+    spread:    the knob s; spread=0 returns n_draws exact copies of mu_bar.
+    rng:       a numpy Generator (explicit for reproducibility and torch-free testing).
+
+    Sampled via one Cholesky factor of the scaled covariance. Returns a list of Series over
+    mu_bar.index, preserving name order.
+    """
+    names = list(mu_bar.index)
+    if spread == 0:
+        return [mu_bar.copy() for _ in range(n_draws)]
+    scale = spread ** 2 / n_periods
+    cov_scaled = covmat.loc[names, names].values * scale
+    chol = np.linalg.cholesky(cov_scaled)
+    z = rng.standard_normal((n_draws, len(names)))
+    samples = mu_bar.values + z @ chol.T
+    return [pd.Series(samples[k], index=names) for k in range(n_draws)]
+
+
 def portfolio_metrics(weights, returns, covmat, rf):
     """Portfolio return/vol/Sharpe over the names in `weights.index`.
 

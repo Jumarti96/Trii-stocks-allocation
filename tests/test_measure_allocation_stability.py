@@ -703,3 +703,67 @@ class TestCliWiring:
         assert args.iterations == 2
         assert args.transformer_runs == 100
         assert args.eliminate_per_draw is True
+
+
+from experiments.measure_allocation_stability import sample_mu_draws
+
+
+def _cov3():
+    names = ["A", "B", "C"]
+    return pd.DataFrame(
+        [[0.04, 0.01, 0.00],
+         [0.01, 0.04, 0.01],
+         [0.00, 0.01, 0.04]],
+        index=names, columns=names,
+    )
+
+
+def _mu_bar3():
+    return pd.Series({"A": 0.01, "B": 0.02, "C": 0.015})
+
+
+class TestSampleMuDraws:
+    def test_returns_n_draws_series_over_index(self):
+        rng = np.random.default_rng(0)
+        draws = sample_mu_draws(_mu_bar3(), _cov3(), n_periods=10,
+                                n_draws=5, spread=1.0, rng=rng)
+        assert len(draws) == 5
+        for d in draws:
+            assert list(d.index) == ["A", "B", "C"]
+
+    def test_spread_zero_returns_exact_copies(self):
+        rng = np.random.default_rng(0)
+        mu = _mu_bar3()
+        draws = sample_mu_draws(mu, _cov3(), n_periods=10,
+                                n_draws=4, spread=0.0, rng=rng)
+        for d in draws:
+            assert (d == mu).all()
+
+    def test_large_k_mean_approx_mu_bar(self):
+        rng = np.random.default_rng(1)
+        mu = _mu_bar3()
+        draws = sample_mu_draws(mu, _cov3(), n_periods=10,
+                                n_draws=50000, spread=1.0, rng=rng)
+        mat = pd.DataFrame(draws)
+        assert np.allclose(mat.mean(axis=0).values, mu.values, atol=2e-3)
+
+    def test_large_k_cov_approx_scaled_sigma(self):
+        rng = np.random.default_rng(2)
+        cov = _cov3()
+        draws = sample_mu_draws(_mu_bar3(), cov, n_periods=10,
+                                n_draws=50000, spread=1.0, rng=rng)
+        mat = pd.DataFrame(draws).values
+        emp = np.cov(mat, rowvar=False)
+        target = cov.values * (1.0 ** 2 / 10)
+        assert np.allclose(emp, target, atol=3e-4)
+
+    def test_larger_spread_more_dispersion(self):
+        mu, cov = _mu_bar3(), _cov3()
+        d1 = pd.DataFrame(sample_mu_draws(mu, cov, 10, 20000, 1.0, np.random.default_rng(3)))
+        d2 = pd.DataFrame(sample_mu_draws(mu, cov, 10, 20000, 2.0, np.random.default_rng(3)))
+        assert (d2.std(axis=0).values > d1.std(axis=0).values).all()
+
+    def test_seeded_rng_reproducible(self):
+        a = sample_mu_draws(_mu_bar3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
+        b = sample_mu_draws(_mu_bar3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
+        assert np.allclose(pd.DataFrame(a).values, pd.DataFrame(b).values)
