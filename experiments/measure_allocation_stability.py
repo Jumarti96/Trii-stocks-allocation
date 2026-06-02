@@ -532,6 +532,27 @@ def write_outputs(result, outdir):
     return paths
 
 
+def write_paired_outputs(result, outdir):
+    """Write per-arm weights/metrics CSVs, the Michaud diagnostic, and the summary text."""
+    os.makedirs(outdir, exist_ok=True)
+    paths = {
+        "current_weights": os.path.join(outdir, "paired_current_weights.csv"),
+        "current_metrics": os.path.join(outdir, "paired_current_metrics.csv"),
+        "michaud_weights": os.path.join(outdir, "paired_michaud_weights.csv"),
+        "michaud_metrics": os.path.join(outdir, "paired_michaud_metrics.csv"),
+        "michaud_diagnostic": os.path.join(outdir, "paired_michaud_diagnostic.csv"),
+        "summary": os.path.join(outdir, "paired_summary.txt"),
+    }
+    result["current"]["weights"].to_csv(paths["current_weights"], index_label="iteration")
+    result["current"]["metrics"].to_csv(paths["current_metrics"], index_label="iteration")
+    result["michaud"]["weights"].to_csv(paths["michaud_weights"], index_label="iteration")
+    result["michaud"]["metrics"].to_csv(paths["michaud_metrics"], index_label="iteration")
+    result["michaud"]["diagnostic"].to_csv(paths["michaud_diagnostic"], index_label="name")
+    with open(paths["summary"], "w") as f:
+        f.write(format_paired_summary(result))
+    return paths
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

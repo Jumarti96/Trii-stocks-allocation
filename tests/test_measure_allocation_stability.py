@@ -667,3 +667,20 @@ class TestFormatPairedSummary:
         text = format_paired_summary(_sample_paired_result())
         assert "Conviction" in text
         assert "freq" in text
+
+
+from experiments.measure_allocation_stability import write_paired_outputs
+
+
+class TestWritePairedOutputs:
+    def test_writes_all_files(self, tmp_path):
+        paths = write_paired_outputs(_sample_paired_result(), str(tmp_path))
+        for key in ("current_weights", "current_metrics", "michaud_weights",
+                    "michaud_metrics", "michaud_diagnostic", "summary"):
+            assert os.path.exists(paths[key])
+
+    def test_michaud_weights_roundtrip(self, tmp_path):
+        result = _sample_paired_result()
+        paths = write_paired_outputs(result, str(tmp_path))
+        reloaded = pd.read_csv(paths["michaud_weights"], index_col=0)
+        assert reloaded.shape == result["michaud"]["weights"].shape
