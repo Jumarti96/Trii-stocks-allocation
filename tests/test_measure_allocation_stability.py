@@ -704,6 +704,21 @@ class TestCliWiring:
         assert args.transformer_runs == 100
         assert args.eliminate_per_draw is True
 
+    def test_draw_mechanism_defaults(self):
+        args = build_arg_parser().parse_args([])
+        assert args.draw_mechanism == "empirical"
+        assert args.spread == 1.0
+        assert args.mc_draws == 1000
+
+    def test_parametric_flags_parse(self):
+        args = build_arg_parser().parse_args(
+            ["--mode", "paired", "--draw-mechanism", "parametric",
+             "--spread", "2.0", "--mc-draws", "500"]
+        )
+        assert args.draw_mechanism == "parametric"
+        assert args.spread == 2.0
+        assert args.mc_draws == 500
+
 
 from experiments.measure_allocation_stability import sample_mu_draws
 

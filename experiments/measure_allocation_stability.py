@@ -16,6 +16,8 @@ Run:  python experiments/measure_allocation_stability.py --iterations 30 --trans
     python experiments/measure_allocation_stability.py --mode paired --iterations 30 --transformer-runs 10
   Production-budget reproducibility check (both arms):
     python experiments/measure_allocation_stability.py --mode paired --iterations 2 --transformer-runs 100
+  Parametric Michaud (Phase 3b, canonical s=1):
+    python experiments/measure_allocation_stability.py --mode paired --draw-mechanism parametric --spread 1.0 --mc-draws 1000 --transformer-runs 100 --iterations 3 --outdir experiments/results/parametric_3x100
 Requires data/01_prices.csv and data/01_returns.csv (pipeline step 1 already run).
 
 Phase 1 (measurement) only. Phase 2 assesses compound-annualisation of mu — see
@@ -631,6 +633,15 @@ def build_arg_parser():
     parser.add_argument("--eliminate-per-draw", action="store_true",
                         help="(paired mode) use per-draw elimination instead of the "
                              "deferred consensus floor -- the comparison arm")
+    parser.add_argument("--draw-mechanism", choices=["empirical", "parametric"],
+                        default="empirical",
+                        help="(paired mode) Michaud draw source: 'empirical' = one draw per "
+                             "transformer run (Phase 3); 'parametric' = N(mu_bar, s^2*Sigma/T) "
+                             "Monte-Carlo draws (Phase 3b)")
+    parser.add_argument("--spread", type=float, default=1.0,
+                        help="(parametric) spread knob s scaling Sigma/T (default 1.0 = canonical)")
+    parser.add_argument("--mc-draws", type=int, default=1000,
+                        help="(parametric) number of Monte-Carlo mu draws K (default 1000)")
     parser.add_argument("--outdir", type=str,
                         default=os.path.join(BASE_DIR, "experiments", "results"),
                         help="Directory for output CSVs and summary")
@@ -652,6 +663,7 @@ def main():
             prices, rets, cfg,
             iterations=args.iterations, transformer_runs=args.transformer_runs,
             seed=args.seed, eliminate_per_draw=args.eliminate_per_draw,
+            draw_mechanism=args.draw_mechanism, spread=args.spread, n_draws=args.mc_draws,
         )
         paths = write_paired_outputs(result, args.outdir)
         print()
