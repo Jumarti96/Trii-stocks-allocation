@@ -767,3 +767,71 @@ class TestSampleMuDraws:
         a = sample_mu_draws(_mu_bar3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
         b = sample_mu_draws(_mu_bar3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
         assert np.allclose(pd.DataFrame(a).values, pd.DataFrame(b).values)
+
+
+class TestParametricDrawMechanism:
+    def _setup(self):
+        np.random.seed(3)
+        n = 40
+        idx = pd.date_range("2023-01-01", periods=n, freq="W-SUN")
+        cols = ["A", "B", "C", "D", "E"]
+        vols = np.array([0.01, 0.02, 0.03, 0.04, 0.05])
+        rets = pd.DataFrame(np.random.normal(0.0, 1.0, (n, 5)) * vols + 0.002,
+                            index=idx, columns=cols)
+        prices = (1 + rets).cumprod() * 100
+        cfg = {"rf_rate": 0.0, "rf_period": 0.0, "max_weight": 0.6,
+               "min_weight": 0.05, "periods_per_year": 12}
+
+        def runs_fn(rets, cfg, n_runs=None, verbose=True):
+            n_runs = n_runs or 3
+            return [pd.DataFrame(np.full((2, 5), 0.005), columns=cols)
+                    for _ in range(n_runs)]
+
+        def period_mu_fn(preds):
+            return preds.mean(axis=0)
+
+        def select_fn(prices, rets, cfg):
+            return cols
+
+        def seed_fn(seed):
+            pass
+
+        return prices, rets, cfg, runs_fn, period_mu_fn, select_fn, seed_fn
+
+    def _run(self, **kw):
+        prices, rets, cfg, runs_fn, period_mu_fn, select_fn, seed_fn = self._setup()
+        return run_paired_experiment(
+            prices, rets, cfg,
+            iterations=kw.pop("iterations", 3),
+            transformer_runs=kw.pop("transformer_runs", 3),
+            seed=0, runs_fn=runs_fn, period_mu_fn=period_mu_fn,
+            select_fn=select_fn, seed_fn=seed_fn, **kw,
+        )
+
+    def test_parametric_returns_same_structure(self):
+        result = self._run(draw_mechanism="parametric", n_draws=200, spread=1.0)
+        assert set(result.keys()) == {"current", "michaud", "selected"}
+        assert result["michaud"]["weights"].shape == (3, 5)
+        assert set(result["michaud"]["diagnostic"].columns) == {"freq", "mean_raw_weight"}
+
+    def test_parametric_weights_sum_to_one(self):
+        result = self._run(draw_mechanism="parametric", n_draws=200, spread=1.0)
+        for arm in ("current", "michaud"):
+            sums = result[arm]["weights"].sum(axis=1)
+            assert np.allclose(sums, 1.0, atol=1e-6)
+
+    def test_parametric_differs_from_current(self):
+        result = self._run(draw_mechanism="parametric", n_draws=200, spread=1.0)
+        assert not np.allclose(
+            result["current"]["weights"].values, result["michaud"]["weights"].values
+        )
+
+    def test_empirical_is_the_default(self):
+        # Constant runs => empirical draws are identical => consensus is a single corner.
+        # The parametric arm (spread>0) perturbs mu, so the two arms must differ. This
+        # confirms the default path is still the Phase-3 empirical one.
+        default = self._run()
+        empirical = self._run(draw_mechanism="empirical")
+        assert np.allclose(
+            default["michaud"]["weights"].values, empirical["michaud"]["weights"].values
+        )

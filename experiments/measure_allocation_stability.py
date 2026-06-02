@@ -397,7 +397,8 @@ def run_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
 
 def run_paired_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
                           runs_fn=None, period_mu_fn=None, select_fn=None,
-                          seed_fn=None, eliminate_per_draw=False):
+                          seed_fn=None, eliminate_per_draw=False,
+                          draw_mechanism="empirical", spread=1.0, n_draws=1000):
     """Run `iterations` passes, deriving the current and Michaud arms from the SAME draws.
 
     runs_fn(rets, cfg, n_runs, verbose) -> list of N per-run period-forecast DataFrames
@@ -444,8 +445,17 @@ def run_paired_experiment(prices, rets, cfg, iterations, transformer_runs, seed,
         cur_w.append(w_cur)
         cur_m.append(portfolio_metrics(s_cur, mu_avg, cov_sel, rf))
 
-        # Michaud arm: per-run mu -> resampled consensus. Score against the SAME mu_avg.
-        per_run_mu = [period_mu_fn(r).loc[selected] for r in runs]
+        # Michaud arm: draws -> resampled consensus. Score against the SAME mu_avg.
+        # 'empirical' = one draw per transformer run (Phase 3); 'parametric' = K Monte-Carlo
+        # draws from N(mu_avg, spread**2 * Sigma / T) (Phase 3b).
+        if draw_mechanism == "parametric":
+            rng = np.random.default_rng(seed + i)
+            per_run_mu = sample_mu_draws(
+                mu_avg, cov_sel, n_periods=len(rets),
+                n_draws=n_draws, spread=spread, rng=rng,
+            )
+        else:
+            per_run_mu = [period_mu_fn(r).loc[selected] for r in runs]
         w_mic, diag = resampled_allocate(
             per_run_mu, cov_sel, cfg, eliminate_per_draw=eliminate_per_draw
         )
