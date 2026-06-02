@@ -452,7 +452,7 @@ class TestApplyConsensusFloor:
         assert abs(out.sum() - 1.0) < 1e-9
 
 
-from experiments.measure_allocation_stability import resampled_allocate
+from experiments.measure_allocation_stability import resampled_allocate, overlap_stats
 
 
 @pytest.fixture
@@ -512,3 +512,36 @@ class TestResampledAllocate:
         mus = [_mu([0.20, 0.02, 0.02, 0.02, 0.02])] * 3
         consensus, _ = resampled_allocate(mus, five_asset_cov, CFG, eliminate_per_draw=True)
         assert abs(consensus.sum() - 1.0) < 1e-6
+
+
+from experiments.measure_allocation_stability import overlap_stats
+
+
+class TestOverlapStats:
+    def test_identical_books(self):
+        df = pd.DataFrame([{"A": 0.5, "B": 0.5, "C": 0.0},
+                           {"A": 0.4, "B": 0.6, "C": 0.0}])
+        s = overlap_stats(df)
+        assert s["shared"] == 2.0
+        assert s["held"] == 2.0
+        assert abs(s["fraction"] - 1.0) < 1e-12
+
+    def test_partial_overlap(self):
+        # Books {A,B} and {B,C}: shared = 1, held per row = 2.
+        df = pd.DataFrame([{"A": 0.5, "B": 0.5, "C": 0.0},
+                           {"A": 0.0, "B": 0.5, "C": 0.5}])
+        s = overlap_stats(df)
+        assert s["shared"] == 1.0
+        assert s["held"] == 2.0
+        assert abs(s["fraction"] - 0.5) < 1e-12
+
+    def test_disjoint_books(self):
+        df = pd.DataFrame([{"A": 1.0, "B": 0.0}, {"A": 0.0, "B": 1.0}])
+        s = overlap_stats(df)
+        assert s["shared"] == 0.0
+
+    def test_single_row_shared_is_none(self):
+        df = pd.DataFrame([{"A": 0.5, "B": 0.5}])
+        s = overlap_stats(df)
+        assert s["shared"] is None
+        assert s["held"] == 2.0

@@ -208,6 +208,26 @@ def mean_jaccard(weights_df, eps=1e-9):
     return float(np.mean(sims))
 
 
+def overlap_stats(weights_df, eps=1e-9):
+    """Mean pairwise count of shared held names, mean held count, and their ratio.
+
+    The intuitive 'shared of held' read (e.g. 7 of ~9). 'shared' and 'fraction' are
+    None when there are fewer than 2 portfolios to compare.
+    """
+    held = weights_df.abs() > eps
+    mean_held = float(held.sum(axis=1).mean())
+    if len(weights_df) < 2:
+        return {"shared": None, "held": mean_held, "fraction": None}
+    rows = [set(held.columns[held.iloc[i].values]) for i in range(len(held))]
+    shared = [
+        len(rows[i] & rows[j])
+        for i in range(len(rows)) for j in range(i + 1, len(rows))
+    ]
+    mean_shared = float(np.mean(shared))
+    fraction = mean_shared / mean_held if mean_held > 0 else float("nan")
+    return {"shared": mean_shared, "held": mean_held, "fraction": fraction}
+
+
 def metric_dispersion(metrics_df):
     """mean / population-std / coefficient-of-variation for each metric column."""
     out = {}
