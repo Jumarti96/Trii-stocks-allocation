@@ -82,6 +82,30 @@ def allocate_msr(returns, covmat, cfg):
     return weights
 
 
+def apply_consensus_floor(weights, min_weight):
+    """Enforce the min-weight floor on an averaged consensus, without re-optimising.
+
+    Mirrors pipeline/04_allocate.py's batch-elimination *rule* (drop names whose
+    cumulative weight, sorted ascending, is below min_weight) but renormalises the
+    survivors to sum to 1 instead of re-running msr_tuned -- the consensus is an
+    average of weight vectors, not an msr solution, so there is no single mu to
+    optimise against. Iterates until every survivor passes; the len<=2 guard keeps
+    the book from emptying. Returns a Series over the original index (dropped = 0.0).
+    """
+    names = list(weights.index)
+    w = weights[weights > 0].sort_values().copy()
+    while len(w) > 2:
+        cum = w.cumsum()
+        failing = cum < min_weight
+        if not failing.any():
+            break
+        w = w[~failing]
+        w = (w / w.sum()).sort_values()
+    out = pd.Series(0.0, index=names)
+    out[w.index] = w
+    return out
+
+
 def portfolio_metrics(weights, returns, covmat, rf):
     """Portfolio return/vol/Sharpe over the names in `weights.index`.
 

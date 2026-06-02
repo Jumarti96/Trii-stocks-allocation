@@ -411,3 +411,42 @@ class TestOptimizerScaleInvariance:
         w2 = msr_tuned(0.001 * c, returns=returns * c, covmat=cov * (c ** 2),
                        max_weight=0.6, periods_per_year=12)
         assert np.allclose(w1, w2, atol=1e-4)
+
+
+from experiments.measure_allocation_stability import apply_consensus_floor
+
+
+class TestApplyConsensusFloor:
+    def test_sums_to_one_and_preserves_index(self):
+        w = pd.Series({"A": 0.5, "B": 0.3, "C": 0.2})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert list(out.index) == ["A", "B", "C"]
+        assert abs(out.sum() - 1.0) < 1e-9
+
+    def test_drops_small_tail_and_renormalises(self):
+        # C (0.02) sits below the 0.05 floor on cumulative weight; it is dropped
+        # and the survivors renormalise to sum 1.
+        w = pd.Series({"A": 0.60, "B": 0.38, "C": 0.02})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert out["C"] == 0.0
+        assert abs(out.sum() - 1.0) < 1e-9
+        assert abs(out["A"] - 0.60 / 0.98) < 1e-9
+
+    def test_no_drop_when_all_above_floor(self):
+        w = pd.Series({"A": 0.5, "B": 0.5})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert (out == pd.Series({"A": 0.5, "B": 0.5})).all()
+
+    def test_zero_weight_names_stay_zero(self):
+        w = pd.Series({"A": 0.7, "B": 0.3, "C": 0.0})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert out["C"] == 0.0
+        assert abs(out.sum() - 1.0) < 1e-9
+
+    def test_stops_at_two_survivors(self):
+        # Even if both remaining names are below the floor, the len<=2 guard stops
+        # the loop so we never empty the book.
+        w = pd.Series({"A": 0.5, "B": 0.5})
+        out = apply_consensus_floor(w, min_weight=0.9)
+        assert (out.abs() > 0).sum() == 2
+        assert abs(out.sum() - 1.0) < 1e-9
