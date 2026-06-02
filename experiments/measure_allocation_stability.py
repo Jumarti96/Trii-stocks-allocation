@@ -12,6 +12,10 @@ re-implemented here to mirror pipeline/03_filter.py and pipeline/04_allocate.py.
 Keep them in sync if those steps change.
 
 Run:  python experiments/measure_allocation_stability.py --iterations 30 --transformer-runs 10
+  Paired Michaud comparison (Phase 3):
+    python experiments/measure_allocation_stability.py --mode paired --iterations 30 --transformer-runs 10
+  Production-budget reproducibility check (both arms):
+    python experiments/measure_allocation_stability.py --mode paired --iterations 2 --transformer-runs 100
 Requires data/01_prices.csv and data/01_returns.csv (pipeline step 1 already run).
 
 Phase 1 (measurement) only. Phase 2 assesses compound-annualisation of mu — see
@@ -285,6 +289,23 @@ def select_stocks(prices, rets, cfg):
     return [t for t in keep.index if t in rets.columns]
 
 
+def train_runs_as_preds(rets, cfg, n_runs=None, verbose=False):
+    """Default runs_fn for the paired experiment: real per-run forecasts, winsorised.
+
+    Wraps transformer_model.train_runs (the un-averaged per-run forecasts) and
+    winsorises each run to the history, returning a list of (periods x stocks)
+    DataFrames -- one per Transformer run. Torch is imported lazily here so the rest
+    of the module (and its tests) stay torch-free.
+    """
+    from transformer_model import train_runs, winsorize_to_history
+    runs = train_runs(rets, cfg, n_runs=n_runs, verbose=verbose)
+    out = []
+    for r in range(runs.shape[0]):
+        preds = pd.DataFrame(runs[r], columns=rets.columns)
+        out.append(winsorize_to_history(preds, rets))
+    return out
+
+
 def seed_everything(seed):
     """Seed numpy and torch (torch imported lazily to keep helpers light)."""
     np.random.seed(seed)
@@ -553,39 +574,62 @@ def write_paired_outputs(result, outdir):
     return paths
 
 
-def main():
+def build_arg_parser():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument("--mode", choices=["measure", "paired"], default="measure",
+                        help="'measure' = single-arm Phase-1 instrument; "
+                             "'paired' = current-vs-Michaud comparison (Phase 3)")
     parser.add_argument("--iterations", type=int, default=30,
-                        help="Number of predict->allocate runs (default 30)")
+                        help="Number of predict->allocate runs (default 30). For the "
+                             "n=100 reproducibility check use --mode paired --iterations 2 "
+                             "--transformer-runs 100.")
     parser.add_argument("--transformer-runs", type=int, default=10,
-                        help="n_runs passed to train_and_predict per iteration (default 10)")
+                        help="n_runs passed to the forecaster per iteration (default 10)")
     parser.add_argument("--seed", type=int, default=0,
                         help="Base seed; iteration i uses seed+i (default 0)")
+    parser.add_argument("--eliminate-per-draw", action="store_true",
+                        help="(paired mode) use per-draw elimination instead of the "
+                             "deferred consensus floor -- the comparison arm")
     parser.add_argument("--outdir", type=str,
                         default=os.path.join(BASE_DIR, "experiments", "results"),
                         help="Directory for output CSVs and summary")
-    args = parser.parse_args()
+    return parser
 
+
+def main():
+    args = build_arg_parser().parse_args()
     cfg = load_config()
     prices = pd.read_csv(PATHS["01_prices"], index_col=0)
     rets = pd.read_csv(PATHS["01_returns"], index_col=0)
 
-    print(f"Universe: {rets.shape[1]} stocks | iterations={args.iterations} | "
-          f"transformer-runs={args.transformer_runs} | seed={args.seed}")
+    print(f"Universe: {rets.shape[1]} stocks | mode={args.mode} | "
+          f"iterations={args.iterations} | transformer-runs={args.transformer_runs} | "
+          f"seed={args.seed}")
 
-    result = run_experiment(
-        prices, rets, cfg,
-        iterations=args.iterations,
-        transformer_runs=args.transformer_runs,
-        seed=args.seed,
-    )
-    paths = write_outputs(result, args.outdir)
+    if args.mode == "paired":
+        result = run_paired_experiment(
+            prices, rets, cfg,
+            iterations=args.iterations, transformer_runs=args.transformer_runs,
+            seed=args.seed, eliminate_per_draw=args.eliminate_per_draw,
+        )
+        paths = write_paired_outputs(result, args.outdir)
+        print()
+        print(format_paired_summary(result))
+    else:
+        result = run_experiment(
+            prices, rets, cfg,
+            iterations=args.iterations, transformer_runs=args.transformer_runs,
+            seed=args.seed,
+        )
+        paths = write_outputs(result, args.outdir)
+        print()
+        print(format_summary(result))
 
-    print()
-    print(format_summary(result))
-    print(f"\nSaved: {paths['weights']}\n       {paths['metrics']}\n       {paths['summary']}")
+    print("\nSaved:")
+    for p in paths.values():
+        print(f"       {p}")
 
 
 if __name__ == "__main__":

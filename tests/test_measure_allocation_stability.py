@@ -684,3 +684,22 @@ class TestWritePairedOutputs:
         paths = write_paired_outputs(result, str(tmp_path))
         reloaded = pd.read_csv(paths["michaud_weights"], index_col=0)
         assert reloaded.shape == result["michaud"]["weights"].shape
+
+
+from experiments.measure_allocation_stability import build_arg_parser
+
+
+class TestCliWiring:
+    def test_mode_defaults_to_measure(self):
+        args = build_arg_parser().parse_args([])
+        assert args.mode == "measure"
+
+    def test_paired_mode_and_flag_parse(self):
+        args = build_arg_parser().parse_args(
+            ["--mode", "paired", "--iterations", "2", "--transformer-runs", "100",
+             "--eliminate-per-draw"]
+        )
+        assert args.mode == "paired"
+        assert args.iterations == 2
+        assert args.transformer_runs == 100
+        assert args.eliminate_per_draw is True
