@@ -425,6 +425,57 @@ def _fmt(v):
     return f"{v:.4f}"
 
 
+def _arm_block(title, weights_df, metrics_df):
+    """One arm's composition + value block for the paired summary."""
+    freq = selection_frequency(weights_df)
+    turnover = mean_turnover(weights_df)
+    jacc = mean_jaccard(weights_df)
+    ov = overlap_stats(weights_df)
+    disp = metric_dispersion(metrics_df)
+
+    lines = [f"== {title} =="]
+    lines.append(f"Mean pairwise turnover: {_fmt(turnover)}")
+    lines.append(f"Mean pairwise Jaccard:  {_fmt(jacc)}")
+    lines.append(
+        f"Overlap: {_fmt(ov['shared'])} of {_fmt(ov['held'])} names shared "
+        f"(fraction {_fmt(ov['fraction'])})"
+    )
+    lines.append("Selection frequency (held fraction across iterations):")
+    for name, v in freq.sort_values(ascending=False).items():
+        lines.append(f"  {name:<14} {v:6.1%}")
+    for col in ["ret", "vol", "sharpe"]:
+        d = disp[col]
+        lines.append(
+            f"  {col:<7} mean {d['mean']:.4f}  std {d['std']:.4f}  CoV {_fmt(d['cov'])}"
+        )
+    return lines
+
+
+def format_paired_summary(result):
+    """Side-by-side current-vs-Michaud stability report from a run_paired_experiment result."""
+    cur, mic = result["current"], result["michaud"]
+    n_iter = len(cur["weights"])
+    n_names = cur["weights"].shape[1]
+
+    lines = [f"Iterations: {n_iter} | Selected names: {n_names}", ""]
+    lines += _arm_block("CURRENT (average mu -> one allocation)", cur["weights"], cur["metrics"])
+    lines.append("")
+    lines += _arm_block("MICHAUD (resampled consensus)", mic["weights"], mic["metrics"])
+    lines.append("")
+    lines.append("== MICHAUD Conviction gradient (mean across iterations) ==")
+    diag = mic["diagnostic"].sort_values("mean_raw_weight", ascending=False)
+    lines.append(f"  {'name':<14} {'freq':>6} {'mean_raw_weight':>16}")
+    for name, row in diag.iterrows():
+        lines.append(f"  {name:<14} {row['freq']:6.1%} {row['mean_raw_weight']:16.4f}")
+    lines.append("")
+    lines.append(
+        "Note: both arms use the SAME N draws per iteration; value metrics for both are "
+        "scored against the averaged mu. Fewer transformer-runs => noisier mu => more "
+        "instability (conservative upper bound vs production 100-run)."
+    )
+    return "\n".join(lines)
+
+
 def format_summary(result):
     """Build the human-readable stability report from a run_experiment result."""
     weights_df = result["weights"]

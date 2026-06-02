@@ -632,3 +632,38 @@ class TestRunPairedExperiment:
         assert not np.allclose(
             result["current"]["weights"].values, result["michaud"]["weights"].values
         )
+
+
+from experiments.measure_allocation_stability import format_paired_summary
+
+
+def _sample_paired_result():
+    cur_w = pd.DataFrame([{"A": 0.6, "B": 0.4, "C": 0.0},
+                          {"A": 0.5, "B": 0.5, "C": 0.0},
+                          {"A": 0.4, "B": 0.3, "C": 0.3}])
+    mic_w = pd.DataFrame([{"A": 0.5, "B": 0.3, "C": 0.2},
+                          {"A": 0.45, "B": 0.35, "C": 0.2},
+                          {"A": 0.4, "B": 0.35, "C": 0.25}])
+    metrics = pd.DataFrame([{"ret": 0.16, "vol": 0.10, "sharpe": 1.6},
+                            {"ret": 0.17, "vol": 0.10, "sharpe": 1.7},
+                            {"ret": 0.15, "vol": 0.11, "sharpe": 1.4}])
+    diag = pd.DataFrame({"freq": {"A": 1.0, "B": 0.9, "C": 0.5},
+                         "mean_raw_weight": {"A": 0.45, "B": 0.33, "C": 0.22}})
+    return {
+        "current": {"weights": cur_w, "metrics": metrics},
+        "michaud": {"weights": mic_w, "metrics": metrics, "diagnostic": diag},
+        "selected": ["A", "B", "C"],
+    }
+
+
+class TestFormatPairedSummary:
+    def test_contains_both_arms_and_overlap(self):
+        text = format_paired_summary(_sample_paired_result())
+        assert "CURRENT" in text
+        assert "MICHAUD" in text
+        assert "Overlap" in text
+
+    def test_contains_conviction_gradient_table(self):
+        text = format_paired_summary(_sample_paired_result())
+        assert "Conviction" in text
+        assert "freq" in text
