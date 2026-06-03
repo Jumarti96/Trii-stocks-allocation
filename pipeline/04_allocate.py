@@ -1,17 +1,17 @@
 """
-Step 4 - Sharpe-Ratio Maximising Allocation
+Step 4 - Portfolio Allocation
 
-Finds the portfolio weights that maximise the Sharpe ratio subject to per-stock
-min/max weight constraints. Iteratively drops stocks whose cumulative weight
-(sorted ascending) falls below MIN_WEIGHT until all remaining stocks satisfy
-the constraint.
+Dispatches on cfg['allocation_method']:
+  - "parametric_michaud" (default): resampled efficiency -- draw K mu ~ N(mu_bar, s^2*Sigma/T),
+    raw msr per draw, average the weights, one min_weight floor (src/allocation.resampled_michaud).
+  - "msr": the legacy Sharpe-max + batch-elimination loop (src/allocation.msr_eliminate).
 
-The technical filter is applied here as the allocation gate: the full-universe
-predictions from step 2 are restricted to the names selected by step 3 before optimising.
+The technical filter (step 3) is the allocation gate: full-universe predictions from step 2 are
+restricted to the selected names before allocating.
 
-Reads  (data/): 02_expected_returns.csv, 02_covmat.csv, 03_selected_returns.csv
+Reads  (data/): 01_returns.csv (for T), 02_expected_returns.csv, 02_covmat.csv, 03_selected_returns.csv
 Outputs (data/):
-    04_weights.csv - optimal weight per selected stock
+    04_weights.csv - optimal weight per held stock
 """
 
 import sys
@@ -23,73 +23,34 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import pandas as pd
-import risk_kit as rk
 
 from config import load_config, PATHS
+from allocation import allocate
 
 
 def main():
     cfg = load_config()
 
-    print("\n=== Step 4: Sharpe Ratio Maximising Allocation ===")
+    print("\n=== Step 4: Portfolio Allocation ===")
 
     expected_returns = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
     covmat = pd.read_csv(PATHS['02_covmat'], index_col=0)
+    n_periods = len(pd.read_csv(PATHS['01_returns'], index_col=0))
 
-    rf_period        = cfg['rf_period']
-    max_weight       = cfg['max_weight']
-    min_weight       = cfg['min_weight']
-    periods_per_year = cfg['periods_per_year']
-
-    # Allocation gate: restrict the full-universe predictions to the names selected by
-    # step 3 (intersect defensively in case a selected name is missing upstream).
+    # Allocation gate: restrict the full-universe predictions to the step-3 selection.
     selected = pd.read_csv(PATHS['03_selected_returns'], index_col=0, nrows=0).columns
     selected = [s for s in selected if s in expected_returns.index and s in covmat.index]
-    print(f"Allocation universe: {len(selected)} selected stock(s).")
+
+    method = cfg.get('allocation_method', 'parametric_michaud')
+    print(f"Method: {method} | Allocation universe: {len(selected)} selected stock(s).")
 
     returns = expected_returns[selected]
-    covmat  = covmat.loc[selected, selected]
+    covmat = covmat.loc[selected, selected]
 
-    initial_weights = rk.msr_tuned(
-        riskfree_rate=rf_period, returns=returns, covmat=covmat,
-        max_weight=max_weight, periods_per_year=periods_per_year, debug=False
-    )
-    optimal = (
-        pd.DataFrame(initial_weights, index=returns.index, columns=['Weights'])
-        .sort_values('Weights')
-    )
+    weights = allocate(returns, covmat, cfg, n_periods)
 
-    # Batch elimination: drop all stocks whose cumulative weight (ascending) < min_weight
-    iteration = 0
-    while optimal['Weights'].sum() >= 0.9999:
-        iteration   += 1
-        cum_weights  = optimal['Weights'].cumsum()
-        failing_mask = cum_weights < min_weight
-
-        if not failing_mask.any():
-            break
-
-        n_dropped = failing_mask.sum()
-        print(f"  [pass {iteration}] Dropping {n_dropped} stock(s) "
-              f"(cumulative weight < {min_weight:.0%}): "
-              f"{list(optimal[failing_mask].index)}")
-
-        optimal = optimal[~failing_mask]
-        if len(optimal) <= 2:
-            break
-
-        w = rk.msr_tuned(
-            riskfree_rate=rf_period,
-            returns=returns[optimal.index],
-            covmat=covmat.loc[optimal.index, optimal.index],
-            max_weight=max_weight,
-            periods_per_year=periods_per_year,
-            debug=False
-        )
-        optimal = (
-            pd.DataFrame(w, index=optimal.index, columns=['Weights'])
-            .sort_values('Weights')
-        )
+    held = weights[weights.abs() > 1e-9]
+    optimal = held.sort_values().to_frame('Weights')
 
     print(f"\nFinal portfolio: {len(optimal)} stocks")
     print(optimal.sort_values('Weights', ascending=False).to_string())
