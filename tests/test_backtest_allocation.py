@@ -50,3 +50,8 @@ class TestMetricHelpers:
 
     def test_max_drawdown_empty(self):
         assert max_drawdown([]) == 0.0
+
+    def test_max_drawdown_opening_decline(self):
+        # A series starting with a loss must register it (equity anchored at 1.0).
+        # r = [-0.1, 0.2]: equity [1.0, 0.9, 1.08]; max drawdown = 0.1 at the first block.
+        assert abs(max_drawdown([-0.1, 0.2]) - 0.1) < 1e-9

@@ -40,7 +40,7 @@ def realized_block_return(weights, block_rets):
     weights: Series of target weights over held names. block_rets: DataFrame (periods x names)
     of ACTUAL per-period simple returns for the block. Each held name compounds over the block;
     the portfolio return is the weighted sum of per-name compounded returns. Only names present
-    in both weights and block_rets are used. Returns a float.
+    in both weights and block_rets are used (names in weights but absent from block_rets are dropped, i.e. treated as 0% cash). Returns a float.
     """
     names = [n for n in weights.index if n in block_rets.columns]
     compounded = (1.0 + block_rets[names]).prod(axis=0) - 1.0
@@ -50,7 +50,7 @@ def realized_block_return(weights, block_rets):
 def pairwise_turnover(w_prev, w_new):
     """Half the L1 distance between two target-weight Series.
 
-    Aligns on the union of names (missing = 0). Returns a float in [0, 1].
+    Aligns on the union of names (missing = 0). Returns a float in [0, 1] when both weight vectors sum to 1.
     """
     names = w_prev.index.union(w_new.index)
     a = w_prev.reindex(names, fill_value=0.0)
@@ -67,7 +67,7 @@ def max_drawdown(block_returns):
     r = np.asarray(block_returns, dtype=float)
     if len(r) == 0:
         return 0.0
-    equity = np.cumprod(1.0 + r)
+    equity = np.concatenate([[1.0], np.cumprod(1.0 + r)])
     running_max = np.maximum.accumulate(equity)
     drawdowns = 1.0 - equity / running_max
     return float(drawdowns.max())
