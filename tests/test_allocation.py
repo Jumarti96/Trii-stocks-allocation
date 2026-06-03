@@ -46,3 +46,68 @@ class TestMsrEliminate:
         w = msr_eliminate(mu, _cov(names), CFG)
         assert (w.abs() > 0).sum() == 2
         assert abs(w.sum() - 1.0) < 1e-6
+
+
+from allocation import apply_consensus_floor, sample_mu_draws
+
+
+class TestApplyConsensusFloor:
+    def test_sums_to_one_and_preserves_index(self):
+        w = pd.Series({"A": 0.5, "B": 0.3, "C": 0.2})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert list(out.index) == ["A", "B", "C"]
+        assert abs(out.sum() - 1.0) < 1e-9
+
+    def test_drops_small_tail_and_renormalises(self):
+        w = pd.Series({"A": 0.60, "B": 0.38, "C": 0.02})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert out["C"] == 0.0
+        assert abs(out.sum() - 1.0) < 1e-9
+        assert abs(out["A"] - 0.60 / 0.98) < 1e-9
+
+    def test_no_drop_when_all_above_floor(self):
+        w = pd.Series({"A": 0.5, "B": 0.5})
+        out = apply_consensus_floor(w, min_weight=0.05)
+        assert (out == pd.Series({"A": 0.5, "B": 0.5})).all()
+
+    def test_stops_at_two_survivors(self):
+        w = pd.Series({"A": 0.5, "B": 0.5})
+        out = apply_consensus_floor(w, min_weight=0.9)
+        assert (out.abs() > 0).sum() == 2
+        assert abs(out.sum() - 1.0) < 1e-9
+
+
+def _cov3():
+    names = ["A", "B", "C"]
+    return pd.DataFrame(
+        [[0.04, 0.01, 0.00], [0.01, 0.04, 0.01], [0.00, 0.01, 0.04]],
+        index=names, columns=names,
+    )
+
+
+def _mu3():
+    return pd.Series({"A": 0.01, "B": 0.02, "C": 0.015})
+
+
+class TestSampleMuDraws:
+    def test_returns_n_draws_over_index(self):
+        draws = sample_mu_draws(_mu3(), _cov3(), 10, 5, 1.0, np.random.default_rng(0))
+        assert len(draws) == 5
+        for d in draws:
+            assert list(d.index) == ["A", "B", "C"]
+
+    def test_spread_zero_returns_copies(self):
+        mu = _mu3()
+        draws = sample_mu_draws(mu, _cov3(), 10, 4, 0.0, np.random.default_rng(0))
+        for d in draws:
+            assert (d == mu).all()
+
+    def test_large_k_mean_approx_mu(self):
+        mu = _mu3()
+        draws = sample_mu_draws(mu, _cov3(), 10, 50000, 1.0, np.random.default_rng(1))
+        assert np.allclose(pd.DataFrame(draws).mean(axis=0).values, mu.values, atol=2e-3)
+
+    def test_seeded_reproducible(self):
+        a = sample_mu_draws(_mu3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
+        b = sample_mu_draws(_mu3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
+        assert np.allclose(pd.DataFrame(a).values, pd.DataFrame(b).values)
