@@ -18,7 +18,7 @@ time_window: null             # Input sequence length; null means derived as per
 
 # Portfolio optimisation (Step 4)
 allocation_method: parametric_michaud   # "parametric_michaud" | "msr"
-michaud_spread: 1.0                      # s; draw scale on Sigma/T (1.0 = canonical)
+michaud_spread: 4.0                      # s; draw scale on Sigma/T (4.0 = "s4", deployed: most consistent across regimes, lower vol/turnover)
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
 michaud_seed: 0                          # int = reproducible; null = fresh draws
 rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
