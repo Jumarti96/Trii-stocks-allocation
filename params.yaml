@@ -13,10 +13,14 @@ signal_min_count: 3           # Minimum positive signals (out of 4) to keep a st
 
 # Transformer model (Step 3)
 periods_to_forecast: 4        # Periods ahead to predict
-n_transformer_runs: 50        # Independent training runs; predictions are averaged
+n_transformer_runs: 100        # Independent training runs; predictions are averaged
 time_window: null             # Input sequence length; null means derived as periods_per_year
 
 # Portfolio optimisation (Step 4)
+allocation_method: parametric_michaud   # "parametric_michaud" | "msr"
+michaud_spread: 1.0                      # s; draw scale on Sigma/T (1.0 = canonical)
+michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
+michaud_seed: 0                          # int = reproducible; null = fresh draws
 rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
 max_weight: 0.15              # Maximum portfolio weight per stock
 min_weight: 0.05              # Minimum portfolio weight per stock
