@@ -95,3 +95,44 @@ def sample_mu_draws(mu_bar, covmat, n_periods, n_draws, spread, rng):
     z = rng.standard_normal((n_draws, len(names)))
     samples = mu_bar.values + z @ chol.T
     return [pd.Series(samples[k], index=names) for k in range(n_draws)]
+
+
+def resampled_michaud(returns, covmat, cfg, n_periods):
+    """Parametric Michaud consensus: draw K mu ~ N(mu_bar, s^2*Sigma/T), raw msr per draw,
+    average the weight vectors, one min_weight floor.
+
+    Reads cfg['michaud_spread'] (s), cfg['michaud_mc_draws'] (K), cfg['michaud_seed'] (int for a
+    reproducible draw set, or None for fresh draws). max_weight is enforced per draw by msr_tuned.
+    Returns a Series over returns.index (dropped names = 0.0).
+    """
+    rf = cfg["rf_period"]
+    max_w = cfg["max_weight"]
+    min_w = cfg["min_weight"]
+    ppy = cfg["periods_per_year"]
+    spread = cfg.get("michaud_spread", 1.0)
+    n_draws = cfg.get("michaud_mc_draws", 1000)
+    seed = cfg.get("michaud_seed", 0)
+
+    rng = np.random.default_rng(seed)
+    draws = sample_mu_draws(returns, covmat, n_periods, n_draws, spread, rng)
+
+    rows = []
+    for mu_i in draws:
+        arr = rk.msr_tuned(
+            riskfree_rate=rf, returns=mu_i, covmat=covmat.loc[mu_i.index, mu_i.index],
+            max_weight=max_w, periods_per_year=ppy, debug=False,
+        )
+        rows.append(pd.Series(arr, index=mu_i.index))
+
+    raw = pd.DataFrame(rows).reset_index(drop=True)
+    return apply_consensus_floor(raw.mean(axis=0), min_w)
+
+
+def allocate(returns, covmat, cfg, n_periods):
+    """Dispatch to the configured allocation method (cfg['allocation_method'])."""
+    method = cfg.get("allocation_method", "parametric_michaud")
+    if method == "msr":
+        return msr_eliminate(returns, covmat, cfg)
+    if method == "parametric_michaud":
+        return resampled_michaud(returns, covmat, cfg, n_periods)
+    raise ValueError(f"unknown allocation_method: {method!r}")

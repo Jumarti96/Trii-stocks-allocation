@@ -111,3 +111,55 @@ class TestSampleMuDraws:
         a = sample_mu_draws(_mu3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
         b = sample_mu_draws(_mu3(), _cov3(), 10, 100, 1.0, np.random.default_rng(7))
         assert np.allclose(pd.DataFrame(a).values, pd.DataFrame(b).values)
+
+
+from allocation import resampled_michaud, allocate
+
+
+@pytest.fixture
+def cov5():
+    names = ["A", "B", "C", "D", "E"]
+    return pd.DataFrame(np.diag([0.04] * 5), index=names, columns=names)
+
+
+def _mu5(vals):
+    return pd.Series(dict(zip(["A", "B", "C", "D", "E"], vals)))
+
+
+class TestResampledMichaud:
+    def test_consensus_sums_to_one(self, cov5):
+        w = resampled_michaud(_mu5([0.20, 0.02, 0.02, 0.02, 0.02]), cov5, CFG, n_periods=100)
+        assert abs(w.sum() - 1.0) < 1e-6
+
+    def test_deterministic_with_seed(self, cov5):
+        mu = _mu5([0.20, 0.05, 0.02, 0.02, 0.02])
+        w1 = resampled_michaud(mu, cov5, CFG, n_periods=100)
+        w2 = resampled_michaud(mu, cov5, CFG, n_periods=100)
+        assert np.allclose(w1.values, w2.values)
+
+    def test_null_seed_still_valid(self, cov5):
+        cfg = dict(CFG)
+        cfg["michaud_seed"] = None
+        w = resampled_michaud(_mu5([0.20, 0.05, 0.02, 0.02, 0.02]), cov5, cfg, n_periods=100)
+        assert abs(w.sum() - 1.0) < 1e-6
+
+
+class TestAllocateDispatcher:
+    def test_routes_to_msr(self, cov5):
+        cfg = dict(CFG); cfg["allocation_method"] = "msr"
+        mu = _mu5([0.20, 0.10, 0.05, 0.05, 0.05])
+        got = allocate(mu, cov5, cfg, n_periods=100)
+        want = msr_eliminate(mu, cov5, cfg)
+        assert np.allclose(got.values, want.values)
+
+    def test_routes_to_parametric(self, cov5):
+        cfg = dict(CFG); cfg["allocation_method"] = "parametric_michaud"
+        mu = _mu5([0.20, 0.05, 0.02, 0.02, 0.02])
+        got = allocate(mu, cov5, cfg, n_periods=100)
+        want = resampled_michaud(mu, cov5, cfg, n_periods=100)
+        assert np.allclose(got.values, want.values)
+
+    def test_unknown_method_raises(self, cov5):
+        cfg = dict(CFG); cfg["allocation_method"] = "bogus"
+        with pytest.raises(ValueError):
+            allocate(_mu5([0.1] * 5), cov5, cfg, n_periods=100)
