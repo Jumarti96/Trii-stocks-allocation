@@ -71,3 +71,44 @@ def max_drawdown(block_returns):
     running_max = np.maximum.accumulate(equity)
     drawdowns = 1.0 - equity / running_max
     return float(drawdowns.max())
+
+
+def annualized_stats(block_returns, blocks_per_year, rf_period):
+    """Annualized return/vol/Sharpe from a series of per-block simple returns.
+
+    block_returns: per-block returns (each block spans one rebalance). blocks_per_year:
+    blocks per year (periods_per_year / rebalance_every). rf_period: the per-BLOCK
+    risk-free return for the Sharpe excess. Returns dict {cum_return, ann_return (geometric),
+    ann_vol, sharpe}. NaN entries when the series is empty or has zero volatility.
+    """
+    r = np.asarray(block_returns, dtype=float)
+    n = len(r)
+    if n == 0:
+        return {"cum_return": float("nan"), "ann_return": float("nan"),
+                "ann_vol": float("nan"), "sharpe": float("nan")}
+    cum = float(np.prod(1.0 + r) - 1.0)
+    ann_return = float((1.0 + cum) ** (blocks_per_year / n) - 1.0)
+    vol_block = float(r.std(ddof=0))
+    ann_vol = vol_block * math.sqrt(blocks_per_year)
+    if vol_block > 1e-14:  # tolerance for numerical zero
+        sharpe = ((float(r.mean()) - rf_period) / vol_block) * math.sqrt(blocks_per_year)
+    else:
+        sharpe = float("nan")
+    return {"cum_return": cum, "ann_return": ann_return, "ann_vol": ann_vol, "sharpe": sharpe}
+
+
+def summarize_arm(block_returns, turnovers, n_held, blocks_per_year, rf_period):
+    """Full per-arm metric row: annualized stats + max DD + turnover + composition.
+
+    turnovers may contain None (e.g. the first rebalance) -- None entries are ignored.
+    n_held: per-block count of held names. Returns dict with cum_return, ann_return,
+    ann_vol, sharpe, max_dd, mean_turnover, avg_names, hit_rate.
+    """
+    out = dict(annualized_stats(block_returns, blocks_per_year, rf_period))
+    r = np.asarray(block_returns, dtype=float)
+    valid_turn = [t for t in turnovers if t is not None]
+    out["max_dd"] = max_drawdown(block_returns)
+    out["mean_turnover"] = float(np.mean(valid_turn)) if valid_turn else float("nan")
+    out["avg_names"] = float(np.mean(n_held)) if len(n_held) else float("nan")
+    out["hit_rate"] = float((r > 0).mean()) if len(r) else float("nan")
+    return out

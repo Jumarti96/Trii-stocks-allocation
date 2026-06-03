@@ -7,6 +7,7 @@ import pytest
 
 from experiments.backtest_allocation import (
     realized_block_return, pairwise_turnover, max_drawdown,
+    annualized_stats, summarize_arm,
 )
 
 CFG = {"rf_rate": 0.0, "rf_period": 0.0, "max_weight": 0.6,
@@ -55,3 +56,33 @@ class TestMetricHelpers:
         # A series starting with a loss must register it (equity anchored at 1.0).
         # r = [-0.1, 0.2]: equity [1.0, 0.9, 1.08]; max drawdown = 0.1 at the first block.
         assert abs(max_drawdown([-0.1, 0.2]) - 0.1) < 1e-9
+
+
+class TestAnnualizedStats:
+    def test_zero_vol_constant_returns(self):
+        out = annualized_stats([0.02] * 12, blocks_per_year=12, rf_period=0.0)
+        assert abs(out["cum_return"] - (1.02 ** 12 - 1)) < 1e-9
+        assert abs(out["ann_return"] - (1.02 ** 12 - 1)) < 1e-9   # n == blocks_per_year
+        assert abs(out["ann_vol"]) < 1e-15  # numerically zero
+        assert math.isnan(out["sharpe"])
+
+    def test_vol_and_sharpe(self):
+        out = annualized_stats([0.1, -0.1], blocks_per_year=4, rf_period=0.0)
+        assert abs(out["ann_vol"] - 0.2) < 1e-9       # std 0.1 * sqrt(4)
+        assert abs(out["sharpe"] - 0.0) < 1e-9        # mean 0
+        assert abs(out["cum_return"] - (1.1 * 0.9 - 1)) < 1e-9
+
+    def test_empty(self):
+        out = annualized_stats([], blocks_per_year=12, rf_period=0.0)
+        assert math.isnan(out["ann_return"])
+
+
+class TestSummarizeArm:
+    def test_full_row(self):
+        out = summarize_arm([0.1, -0.1, 0.1], [None, 0.2, 0.4], [3, 4, 3],
+                            blocks_per_year=12, rf_period=0.0)
+        assert set(out) >= {"cum_return", "ann_return", "ann_vol", "sharpe",
+                            "max_dd", "mean_turnover", "avg_names", "hit_rate"}
+        assert abs(out["mean_turnover"] - 0.3) < 1e-9      # mean of 0.2, 0.4 (None ignored)
+        assert abs(out["avg_names"] - (10 / 3)) < 1e-9
+        assert abs(out["hit_rate"] - (2 / 3)) < 1e-9       # 2 of 3 blocks positive
