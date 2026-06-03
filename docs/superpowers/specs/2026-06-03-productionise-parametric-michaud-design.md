@@ -26,9 +26,12 @@ the merge/cutover on the in-flight robustness backtest confirming the win.
   **`parametric_michaud`**; `msr` kept as a permanent, instantly-revertible fallback.
 - **Reproducibility:** seed step 4's Monte-Carlo draws via a config param, default a **fixed int**
   (`null` allowed for ad-hoc unseeded multi-runs). At K=1000 the seed is near-irrelevant to the
-  *result* (LLN), so this is reproducibility/auditability insurance, not bias. Step-2 transformer
-  seeding is **out of scope** (separate phase); end-to-end weights still vary run-to-run but parametric
-  Michaud makes them far less sensitive to that.
+  *result* (LLN), so this is reproducibility/auditability insurance, not bias. **Scope of
+  `michaud_seed`:** it governs ONLY the `sample_mu_draws` Monte-Carlo draws — `msr_tuned` is
+  deterministic (no randomness), so the draws are the only stochastic element in step 4. The step-2
+  transformer is NOT seeded by it (separate, out-of-scope phase). Consequence: re-running *just step 4*
+  on the same `02_*` files is identical; re-running the *whole pipeline* still varies run-to-run (fresh
+  μ̄), though parametric Michaud makes the weights far less sensitive to that.
 - **`max_weight` after flooring — Option A:** keep the exact validated backtest logic (consensus floor
   renormalises survivors; a top name may marginally exceed `max_weight`, ~≤1%pt). This is what the
   winning backtest actually used. A strict post-floor cap (Option B) is a noted follow-up.
