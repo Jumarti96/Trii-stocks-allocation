@@ -204,3 +204,40 @@ class TestRunBacktest:
         res = self._run()
         assert res["current"]["turnover"][0] is None
         assert res["current"]["turnover"][1] is not None
+
+
+from experiments.backtest_allocation import format_backtest_summary, write_backtest_outputs
+
+
+def _toy_results():
+    dates = list(pd.date_range("2020-01-01", periods=3, freq="W-SUN"))
+    w = [pd.Series({"A": 0.5, "B": 0.5}) for _ in range(3)]
+
+    def arm(brets, turns, nheld):
+        return {"block_returns": brets, "turnover": turns, "n_held": nheld,
+                "weights": w, "dates": dates}
+
+    return {
+        "current": arm([0.02, -0.01, 0.03], [None, 0.2, 0.1], [2, 2, 2]),
+        "equal_weight": arm([0.01, 0.0, 0.01], [None, 0.0, 0.0], [2, 2, 2]),
+        "rebalance_index": [10, 14, 18],
+    }
+
+
+class TestSummaryAndOutputs:
+    def test_summary_contains_arms_and_metrics(self):
+        text = format_backtest_summary(_toy_results(), CFG, rebalance_every=4)
+        assert "current" in text and "equal_weight" in text
+        assert "sharpe" in text and "mean_turnover" in text
+
+    def test_writes_all_files(self, tmp_path):
+        paths = write_backtest_outputs(_toy_results(), CFG, 4, str(tmp_path))
+        for key in ["returns", "turnover", "summary",
+                    "weights_current", "weights_equal_weight"]:
+            assert os.path.exists(paths[key])
+
+    def test_returns_roundtrip(self, tmp_path):
+        paths = write_backtest_outputs(_toy_results(), CFG, 4, str(tmp_path))
+        df = pd.read_csv(paths["returns"], index_col=0)
+        assert list(df.columns) == ["current", "equal_weight"]
+        assert len(df) == 3

@@ -223,3 +223,53 @@ def run_backtest(prices, rets, cfg, oos_periods, rebalance_every, n_runs, mc_dra
 
     results["rebalance_index"] = rebalance_index
     return results
+
+
+def format_backtest_summary(results, cfg, rebalance_every):
+    """Headline metric table (one row per arm) from a run_backtest result."""
+    blocks_per_year = cfg["periods_per_year"] / rebalance_every
+    rf_block = (1.0 + cfg["rf_period"]) ** rebalance_every - 1.0
+    labels = [k for k in results if k != "rebalance_index"]
+    rows = []
+    for lab in labels:
+        d = results[lab]
+        m = summarize_arm(d["block_returns"], d["turnover"], d["n_held"],
+                          blocks_per_year, rf_block)
+        m["arm"] = lab
+        rows.append(m)
+    cols = ["cum_return", "ann_return", "ann_vol", "sharpe", "max_dd",
+            "mean_turnover", "avg_names", "hit_rate"]
+    df = pd.DataFrame(rows).set_index("arm")[cols]
+    n_blocks = len(results[labels[0]]["block_returns"])
+    header = (f"Walk-forward backtest | blocks: {n_blocks} | "
+              f"rebalance_every: {rebalance_every} | blocks/yr: {blocks_per_year:g}\n"
+              f"(frictionless / gross realized returns)\n")
+    pd.set_option("display.float_format", lambda v: f"{v:.4f}")
+    return header + "\n" + df.to_string()
+
+
+def write_backtest_outputs(results, cfg, rebalance_every, outdir):
+    """Write returns/turnover/per-arm-weights CSVs and the summary text; return their paths."""
+    os.makedirs(outdir, exist_ok=True)
+    labels = [k for k in results if k != "rebalance_index"]
+    dates = results[labels[0]]["dates"]
+    paths = {}
+
+    ret_df = pd.DataFrame({lab: results[lab]["block_returns"] for lab in labels}, index=dates)
+    paths["returns"] = os.path.join(outdir, "backtest_returns.csv")
+    ret_df.to_csv(paths["returns"], index_label="date")
+
+    turn_df = pd.DataFrame({lab: results[lab]["turnover"] for lab in labels}, index=dates)
+    paths["turnover"] = os.path.join(outdir, "backtest_turnover.csv")
+    turn_df.to_csv(paths["turnover"], index_label="date")
+
+    for lab in labels:
+        w_df = pd.DataFrame(results[lab]["weights"], index=dates).fillna(0.0)
+        p = os.path.join(outdir, f"backtest_weights_{lab}.csv")
+        w_df.to_csv(p, index_label="date")
+        paths[f"weights_{lab}"] = p
+
+    paths["summary"] = os.path.join(outdir, "backtest_summary.txt")
+    with open(paths["summary"], "w") as f:
+        f.write(format_backtest_summary(results, cfg, rebalance_every))
+    return paths
