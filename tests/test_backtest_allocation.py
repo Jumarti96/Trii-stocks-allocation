@@ -86,3 +86,53 @@ class TestSummarizeArm:
         assert abs(out["mean_turnover"] - 0.3) < 1e-9      # mean of 0.2, 0.4 (None ignored)
         assert abs(out["avg_names"] - (10 / 3)) < 1e-9
         assert abs(out["hit_rate"] - (2 / 3)) < 1e-9       # 2 of 3 blocks positive
+
+
+from experiments.backtest_allocation import equal_weight, label_of, compute_arm_weights
+
+
+@pytest.fixture
+def cov5():
+    names = ["A", "B", "C", "D", "E"]
+    return pd.DataFrame(np.diag([0.04] * 5), index=names, columns=names)
+
+
+def _mu5(vals):
+    return pd.Series(dict(zip(["A", "B", "C", "D", "E"], vals)))
+
+
+class TestLabelOf:
+    def test_labels(self):
+        assert label_of("current") == "current"
+        assert label_of("empirical") == "empirical"
+        assert label_of(("parametric", 2.0)) == "parametric_s2"
+        assert label_of(("parametric", 1.0)) == "parametric_s1"
+
+
+class TestComputeArmWeights:
+    def test_current_sums_to_one(self, cov5):
+        w = compute_arm_weights("current", _mu5([0.2, 0.02, 0.02, 0.02, 0.02]), None,
+                                cov5, CFG, 100, 50, np.random.default_rng(0))
+        assert abs(w.sum() - 1.0) < 1e-6
+
+    def test_equal_weight(self, cov5):
+        w = compute_arm_weights("equal_weight", _mu5([0.1] * 5), None,
+                                cov5, CFG, 100, 50, np.random.default_rng(0))
+        assert (abs(w - 0.2) < 1e-9).all()
+        assert abs(w.sum() - 1.0) < 1e-9
+
+    def test_empirical_sums_to_one(self, cov5):
+        per_run = [_mu5([0.2, 0.02, 0.02, 0.02, 0.02]), _mu5([0.02, 0.2, 0.02, 0.02, 0.02])]
+        w = compute_arm_weights("empirical", _mu5([0.1] * 5), per_run,
+                                cov5, CFG, 100, 50, np.random.default_rng(0))
+        assert abs(w.sum() - 1.0) < 1e-6
+
+    def test_parametric_sums_to_one(self, cov5):
+        w = compute_arm_weights(("parametric", 2.0), _mu5([0.2, 0.02, 0.02, 0.02, 0.02]),
+                                None, cov5, CFG, 100, 500, np.random.default_rng(0))
+        assert abs(w.sum() - 1.0) < 1e-6
+
+    def test_unknown_arm_raises(self, cov5):
+        with pytest.raises(ValueError):
+            compute_arm_weights("bogus", _mu5([0.1] * 5), None,
+                                cov5, CFG, 100, 50, np.random.default_rng(0))

@@ -112,3 +112,43 @@ def summarize_arm(block_returns, turnovers, n_held, blocks_per_year, rf_period):
     out["avg_names"] = float(np.mean(n_held)) if len(n_held) else float("nan")
     out["hit_rate"] = float((r > 0).mean()) if len(r) else float("nan")
     return out
+
+
+def equal_weight(names):
+    """Equal (1/N) weight Series over `names`."""
+    names = list(names)
+    n = len(names)
+    if n == 0:
+        return pd.Series(dtype=float)
+    return pd.Series([1.0 / n] * n, index=names)
+
+
+def label_of(arm):
+    """Stable string label for an arm identifier."""
+    if isinstance(arm, tuple) and arm[0] == "parametric":
+        return f"parametric_s{arm[1]:g}"
+    return arm
+
+
+def compute_arm_weights(arm, mu_bar, per_run_mu, covmat, cfg, n_periods, mc_draws, rng):
+    """Map an arm identifier to a target-weight Series over the eligible names.
+
+    arm: "current" | "empirical" | "equal_weight" | ("parametric", s). mu_bar: averaged
+    per-period mu over the eligible names. per_run_mu: list of per-run mu Series (eligible
+    names) for the empirical arm. covmat: Ledoit-Wolf cov over the eligible names. n_periods:
+    T backing covmat (parametric Sigma/T scale). mc_draws: K parametric draws. rng: numpy
+    Generator. Reuses allocate_msr / resampled_allocate / sample_mu_draws. Returns a Series
+    over mu_bar.index (dropped names = 0.0).
+    """
+    if arm == "current":
+        return allocate_msr(mu_bar, covmat, cfg)
+    if arm == "equal_weight":
+        return equal_weight(list(mu_bar.index))
+    if arm == "empirical":
+        consensus, _ = resampled_allocate(per_run_mu, covmat, cfg)
+        return consensus
+    if isinstance(arm, tuple) and arm[0] == "parametric":
+        draws = sample_mu_draws(mu_bar, covmat, n_periods, mc_draws, arm[1], rng)
+        consensus, _ = resampled_allocate(draws, covmat, cfg)
+        return consensus
+    raise ValueError(f"unknown arm: {arm!r}")
