@@ -273,3 +273,58 @@ def write_backtest_outputs(results, cfg, rebalance_every, outdir):
     with open(paths["summary"], "w") as f:
         f.write(format_backtest_summary(results, cfg, rebalance_every))
     return paths
+
+
+def parse_spreads(text):
+    """Parse a comma-separated spreads string into a list of floats."""
+    return [float(x) for x in text.split(",") if x.strip()]
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--oos-periods", type=int, default=162,
+                        help="Out-of-sample window length in periods (default 162 ~ 3yr weekly)")
+    parser.add_argument("--rebalance-every", type=int, default=4,
+                        help="Rebalance/holding period in periods (default 4 = forecast horizon)")
+    parser.add_argument("--n-runs", type=int, default=50,
+                        help="Transformer runs per rebalance (default 50)")
+    parser.add_argument("--mc-draws", type=int, default=1000,
+                        help="Parametric Monte-Carlo mu draws K (default 1000)")
+    parser.add_argument("--spreads", type=str, default="1,2,4",
+                        help="Comma-separated parametric spread values (default '1,2,4')")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Base seed; rebalance k uses seed+k (default 0)")
+    parser.add_argument("--outdir", type=str,
+                        default=os.path.join(BASE_DIR, "experiments", "results", "backtest"),
+                        help="Directory for output CSVs and summary")
+    return parser
+
+
+def main():
+    args = build_arg_parser().parse_args()
+    cfg = load_config()
+    prices = pd.read_csv(PATHS["01_prices"], index_col=0)
+    rets = pd.read_csv(PATHS["01_returns"], index_col=0)
+    spreads = parse_spreads(args.spreads)
+
+    print(f"Universe: {rets.shape[1]} stocks | oos_periods={args.oos_periods} | "
+          f"rebalance_every={args.rebalance_every} | n_runs={args.n_runs} | "
+          f"mc_draws={args.mc_draws} | spreads={spreads} | seed={args.seed}")
+
+    results = run_backtest(
+        prices, rets, cfg, oos_periods=args.oos_periods,
+        rebalance_every=args.rebalance_every, n_runs=args.n_runs,
+        mc_draws=args.mc_draws, spreads=spreads, seed=args.seed,
+    )
+    paths = write_backtest_outputs(results, cfg, args.rebalance_every, args.outdir)
+    print()
+    print(format_backtest_summary(results, cfg, args.rebalance_every))
+    print("\nSaved:")
+    for p in paths.values():
+        print(f"       {p}")
+
+
+if __name__ == "__main__":
+    main()

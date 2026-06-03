@@ -241,3 +241,21 @@ class TestSummaryAndOutputs:
         df = pd.read_csv(paths["returns"], index_col=0)
         assert list(df.columns) == ["current", "equal_weight"]
         assert len(df) == 3
+
+
+from experiments.backtest_allocation import build_arg_parser, parse_spreads
+
+
+class TestCliWiring:
+    def test_defaults(self):
+        args = build_arg_parser().parse_args([])
+        assert args.oos_periods == 162
+        assert args.rebalance_every == 4
+        assert args.n_runs == 50
+        assert args.mc_draws == 1000
+        assert args.spreads == "1,2,4"
+        assert args.seed == 0
+
+    def test_parse_spreads(self):
+        assert parse_spreads("1,2,4") == [1.0, 2.0, 4.0]
+        assert parse_spreads("2") == [2.0]
