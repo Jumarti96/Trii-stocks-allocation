@@ -136,3 +136,71 @@ class TestComputeArmWeights:
         with pytest.raises(ValueError):
             compute_arm_weights("bogus", _mu5([0.1] * 5), None,
                                 cov5, CFG, 100, 50, np.random.default_rng(0))
+
+
+from experiments.backtest_allocation import run_backtest
+
+
+class TestRunBacktest:
+    def _data(self):
+        np.random.seed(0)
+        n = 40
+        idx = pd.date_range("2020-01-01", periods=n, freq="W-SUN")
+        cols = ["A", "B", "C", "D", "E"]
+        rets = pd.DataFrame(np.random.normal(0.001, 0.02, (n, 5)), index=idx, columns=cols)
+        prices = (1 + rets).cumprod() * 100
+        return prices, rets, dict(CFG)
+
+    def _stubs(self, seen=None):
+        cols = ["A", "B", "C", "D", "E"]
+
+        def runs_fn(rets, cfg, n_runs=None, verbose=True):
+            if seen is not None:
+                seen.append(len(rets))
+            n_runs = n_runs or 3
+            return [pd.DataFrame(np.full((2, 5), 0.01), columns=cols) for _ in range(n_runs)]
+
+        def period_mu_fn(preds):
+            return preds.mean(axis=0)
+
+        def select_fn(prices, rets, cfg):
+            return cols
+
+        def seed_fn(seed):
+            pass
+
+        return runs_fn, period_mu_fn, select_fn, seed_fn
+
+    def _run(self, seen=None, spreads=(1.0, 2.0, 4.0)):
+        prices, rets, cfg = self._data()
+        runs_fn, period_mu_fn, select_fn, seed_fn = self._stubs(seen)
+        return run_backtest(
+            prices, rets, cfg, oos_periods=12, rebalance_every=4, n_runs=3,
+            mc_draws=200, spreads=list(spreads), seed=0,
+            runs_fn=runs_fn, period_mu_fn=period_mu_fn, select_fn=select_fn, seed_fn=seed_fn,
+        )
+
+    def test_rebalance_count_and_arms(self):
+        res = self._run()
+        assert res["rebalance_index"] == [28, 32, 36]
+        for label in ["current", "parametric_s1", "parametric_s2", "parametric_s4",
+                      "empirical", "equal_weight"]:
+            assert len(res[label]["block_returns"]) == 3
+
+    def test_no_lookahead(self):
+        seen = []
+        self._run(seen=seen)
+        # forecaster called once per rebalance on the expanding history up to t (< T=40)
+        assert seen == [28, 32, 36]
+
+    def test_weights_sum_to_one(self):
+        res = self._run()
+        for label in ["current", "parametric_s2", "empirical", "equal_weight"]:
+            for w in res[label]["weights"]:
+                held = w[w.abs() > 1e-9]
+                assert abs(held.sum() - 1.0) < 1e-6
+
+    def test_turnover_first_is_none(self):
+        res = self._run()
+        assert res["current"]["turnover"][0] is None
+        assert res["current"]["turnover"][1] is not None

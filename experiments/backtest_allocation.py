@@ -152,3 +152,74 @@ def compute_arm_weights(arm, mu_bar, per_run_mu, covmat, cfg, n_periods, mc_draw
         consensus, _ = resampled_allocate(draws, covmat, cfg)
         return consensus
     raise ValueError(f"unknown arm: {arm!r}")
+
+
+def run_backtest(prices, rets, cfg, oos_periods, rebalance_every, n_runs, mc_draws,
+                 spreads, seed, arms=None, runs_fn=None, period_mu_fn=None,
+                 select_fn=None, seed_fn=None):
+    """Walk-forward backtest: retrain once per rebalance and score all arms on realized returns.
+
+    Steps t from len(rets)-oos_periods by rebalance_every while a full block (t+rebalance_every)
+    fits. At each t: train on rets[:t] (expanding), filter on prices[:t], Sigma=Ledoit-Wolf(rets[:t]),
+    build each arm's weights over the eligible names, then realize buy-and-hold over
+    rets[t:t+rebalance_every]. arms defaults to the 6-arm set built from `spreads`. The four *_fn
+    are dependency-injection seams (default to the real torch-backed implementations).
+
+    Returns dict label -> {block_returns, weights (list of Series), turnover (list, first None),
+    n_held (list), dates (list)}, plus "rebalance_index" -> list of t indices.
+    """
+    if arms is None:
+        arms = (["current"]
+                + [("parametric", s) for s in spreads]
+                + ["empirical", "equal_weight"])
+    if runs_fn is None:
+        runs_fn = train_runs_as_preds
+    if period_mu_fn is None:
+        from transformer_model import weighted_mean_return
+        period_mu_fn = weighted_mean_return
+    if select_fn is None:
+        select_fn = select_stocks
+    if seed_fn is None:
+        seed_fn = seed_everything
+
+    T = len(rets)
+    start = T - oos_periods
+    rebalance_index = list(range(start, T - rebalance_every + 1, rebalance_every))
+
+    labels = [label_of(a) for a in arms]
+    results = {lab: {"block_returns": [], "weights": [], "turnover": [],
+                     "n_held": [], "dates": []} for lab in labels}
+    prev_weights = {lab: None for lab in labels}
+
+    for k, t in enumerate(rebalance_index):
+        seed_fn(seed + k)
+        rets_hist = rets.iloc[:t]
+        prices_hist = prices.iloc[:t]
+        runs = runs_fn(rets_hist, cfg, n_runs=n_runs, verbose=False)
+        selected = select_fn(prices_hist, rets_hist, cfg)
+        covmat = pd.DataFrame(
+            LedoitWolf().fit(rets_hist).covariance_,
+            index=rets_hist.columns, columns=rets_hist.columns,
+        )
+        cov_sel = covmat.loc[selected, selected]
+        preds_avg = sum(r.values for r in runs) / len(runs)
+        preds_avg = pd.DataFrame(preds_avg, columns=runs[0].columns)
+        mu_bar = period_mu_fn(preds_avg).loc[selected]
+        per_run_mu = [period_mu_fn(r).loc[selected] for r in runs]
+
+        block = rets.iloc[t:t + rebalance_every]
+        rng = np.random.default_rng(seed + k)
+        for arm, lab in zip(arms, labels):
+            w = compute_arm_weights(arm, mu_bar, per_run_mu, cov_sel, cfg,
+                                    len(rets_hist), mc_draws, rng)
+            held = w[w.abs() > 1e-9]
+            tn = pairwise_turnover(prev_weights[lab], w) if prev_weights[lab] is not None else None
+            results[lab]["block_returns"].append(realized_block_return(held, block))
+            results[lab]["weights"].append(w)
+            results[lab]["turnover"].append(tn)
+            results[lab]["n_held"].append(int((w.abs() > 1e-9).sum()))
+            results[lab]["dates"].append(rets.index[t])
+            prev_weights[lab] = w
+
+    results["rebalance_index"] = rebalance_index
+    return results
