@@ -166,3 +166,63 @@ def write_monthly_outputs(run_out, agg_by_horizon, outdir):
     with open(paths["summary"], "w") as f:
         f.write(format_monthly_summary(agg_by_horizon))
     return paths
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--horizons", type=str, default="1,6",
+                        help="Comma-separated forecast horizons in months (default 1,6)")
+    parser.add_argument("--seeds", type=str, default="0,100",
+                        help="Comma-separated base seeds (default 0,100)")
+    parser.add_argument("--oos-periods", type=int, default=60,
+                        help="Out-of-sample months held out (default 60)")
+    parser.add_argument("--n-runs", type=int, default=75,
+                        help="Transformer runs per rebalance (default 75)")
+    parser.add_argument("--mc-draws", type=int, default=1000,
+                        help="K parametric Monte-Carlo draws (default 1000)")
+    parser.add_argument("--spreads", type=str, default="4,8",
+                        help="Comma-separated parametric spreads s (default 4,8)")
+    parser.add_argument("--outdir", type=str,
+                        default=os.path.join(BASE_DIR, "experiments", "results", "monthly_env"),
+                        help="Directory for output CSVs and summary")
+    return parser
+
+
+def main():
+    args = build_arg_parser().parse_args()
+    weekly_cfg = load_config()
+    prices = pd.read_csv(MONTHLY_PRICES, index_col=0)
+    rets = pd.read_csv(MONTHLY_RETURNS, index_col=0)
+
+    horizons = [int(x) for x in args.horizons.split(",")]
+    seeds = [int(x) for x in args.seeds.split(",")]
+    spreads = [float(x) for x in args.spreads.split(",")]
+
+    print(f"Monthly universe: {rets.shape[1]} names | months: {rets.shape[0]} | "
+          f"horizons={horizons} | seeds={seeds} | oos={args.oos_periods} | "
+          f"n_runs={args.n_runs} | K={args.mc_draws} | spreads={spreads} | filter=OFF",
+          flush=True)
+
+    run_out = run_monthly_env(
+        prices, rets, weekly_cfg, horizons=horizons, seeds=seeds,
+        oos_periods=args.oos_periods, n_runs=args.n_runs, mc_draws=args.mc_draws,
+        spreads=spreads,
+    )
+
+    agg_by_horizon = {
+        h: aggregate_across_seeds(run_out[h]["per_seed"], run_out[h]["cfg"], h)
+        for h in horizons
+    }
+    paths = write_monthly_outputs(run_out, agg_by_horizon, args.outdir)
+
+    print()
+    print(format_monthly_summary(agg_by_horizon))
+    print("\nSaved:")
+    for p in sorted(set(paths.values())):
+        print(f"       {p}")
+
+
+if __name__ == "__main__":
+    main()

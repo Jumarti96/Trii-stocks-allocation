@@ -135,3 +135,17 @@ def test_write_monthly_outputs_creates_files(tmp_path):
     assert os.path.exists(paths["summary"])
     assert os.path.exists(os.path.join(outdir, "monthly_table_h1.csv"))
     assert os.path.exists(os.path.join(outdir, "h1_seed0", "backtest_summary.txt"))
+
+
+def test_arg_parser_parses_lists():
+    parser = meb.build_arg_parser()
+    args = parser.parse_args(
+        ["--horizons", "1,6", "--seeds", "0,100", "--oos-periods", "60",
+         "--n-runs", "75", "--mc-draws", "1000", "--spreads", "4,8"]
+    )
+    assert [int(x) for x in args.horizons.split(",")] == [1, 6]
+    assert [int(x) for x in args.seeds.split(",")] == [0, 100]
+    assert [float(x) for x in args.spreads.split(",")] == [4.0, 8.0]
+    assert args.oos_periods == 60
+    assert args.n_runs == 75
+    assert args.mc_draws == 1000
