@@ -140,3 +140,22 @@ def test_first_flattening_n_finds_first_small_delta():
     # never flattens
     steep = {10: 0.84, 25: 0.6, 50: 0.4, 75: 0.25, 100: 0.1}
     assert ns.first_flattening_n(steep, grid, tol=0.05) is None
+
+
+def test_format_nstudy_summary_has_arms_and_advisory():
+    arms, grid = ["current", "s4"], [10, 25]
+    names = ["A", "B"]
+    metrics = pd.DataFrame({"ret": [0.02, 0.02], "vol": [0.1, 0.1], "sharpe": [0.2, 0.2]})
+    # churning weights -> turnover is non-zero (1.0) but identical across n -> flat
+    w = pd.DataFrame([[1.0, 0.0], [0.0, 1.0]], columns=names)
+    weights = {a: {n: w for n in grid} for a in arms}
+    mets = {a: {n: metrics for n in grid} for a in arms}
+    r = _fake_seed_result(arms, grid, weights, mets)
+    summary = ns.summarize_nstudy({0: r})
+
+    text = ns.format_nstudy_summary(summary, primary_arm="s4", tol=0.05)
+    assert "current" in text
+    assert "s4" in text
+    assert "turnover" in text
+    # s4 turnover is flat across n (both = 1.0) -> advisory fires at n=25
+    assert "turnover flattens at n=25" in text

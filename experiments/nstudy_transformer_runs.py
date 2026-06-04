@@ -215,3 +215,47 @@ def first_flattening_n(values_by_n, grid, tol=0.05):
         if abs(cur - base) / abs(base) < tol:
             return n
     return None
+
+
+def _fmt_mean_std(mean, std):
+    def _one(v):
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return "N/A"
+        return f"{v:.4f}"
+    return f"{_one(mean)}+/-{_one(std)}"
+
+
+def format_nstudy_summary(summary, primary_arm="s4", tol=0.05):
+    """Per-arm metric-vs-n tables (mean +/- cross-seed std) plus the advisory note."""
+    mean, std = summary["mean"], summary["std"]
+    cols = summary["metric_cols"]
+    grid = summary["grid"]
+
+    lines = ["n_transformer_runs study (mean +/- cross-seed std)", ""]
+    for arm in summary["arms"]:
+        lines.append(f"== arm: {arm} ==")
+        header = f"  {'n':>5}  " + "  ".join(f"{c:>20}" for c in cols)
+        lines.append(header)
+        for n in grid:
+            cells = [f"{_fmt_mean_std(mean.loc[(arm, n), c], std.loc[(arm, n), c]):>20}"
+                     for c in cols]
+            lines.append(f"  {n:>5}  " + "  ".join(cells))
+        lines.append("")
+
+    if primary_arm in summary["arms"]:
+        turnover_by_n = {n: mean.loc[(primary_arm, n), "turnover"] for n in grid}
+        jacc_by_n = {n: mean.loc[(primary_arm, n), "jaccard"] for n in grid}
+        t_flat = first_flattening_n(turnover_by_n, grid, tol)
+        j_flat = first_flattening_n(jacc_by_n, grid, tol)
+        lines.append(
+            f"Advisory ({primary_arm}, tol={tol:.0%}): turnover flattens at "
+            f"n={t_flat}; Jaccard flattens at n={j_flat}. "
+            "A hint at where added runs stop buying stability -- the final pick is yours."
+        )
+    lines.append("")
+    lines.append(
+        "Note: in-sample. Read composition (turnover/Jaccard/overlap) and value CoVs, "
+        "NOT value levels (current is the in-sample argmax of mu(n)). Realized verdict = "
+        "the backtest study."
+    )
+    return "\n".join(lines)
