@@ -87,9 +87,12 @@ def run_nstudy_seed(prices, rets, cfg, grid, iterations, seed, spreads, n_draws,
     """
     if train_runs_fn is None or winsorize_fn is None or period_mu_fn is None:
         from transformer_model import train_runs, winsorize_to_history, weighted_mean_return
-        train_runs_fn = train_runs_fn or train_runs
-        winsorize_fn = winsorize_fn or winsorize_to_history
-        period_mu_fn = period_mu_fn or weighted_mean_return
+        if train_runs_fn is None:
+            train_runs_fn = train_runs
+        if winsorize_fn is None:
+            winsorize_fn = winsorize_to_history
+        if period_mu_fn is None:
+            period_mu_fn = weighted_mean_return
     if select_fn is None:
         select_fn = select_stocks
     if seed_fn is None:
@@ -152,7 +155,13 @@ def run_nstudy_seed(prices, rets, cfg, grid, iterations, seed, spreads, n_draws,
 
 
 def seed_arm_metrics(seed_result):
-    """Per-(arm, n) scalar metrics for one seed (one row per arm x n)."""
+    """Per-(arm, n) scalar metrics for one seed (one row per arm x n).
+
+    Composition is reduced to scalars (turnover/jaccard/overlap/held); per-name
+    selection_frequency is intentionally NOT a column here -- it is a per-name vector, not
+    a scalar, and the raw per-seed weights CSVs already carry that signal. turnover/jaccard
+    are None when iterations < 2; that flows to NaN in the aggregation and is skipped there.
+    """
     rows = []
     for arm in seed_result["arms"]:
         for n in seed_result["grid"]:
@@ -287,6 +296,7 @@ def write_nstudy_outputs(results_by_seed, summary, outdir):
             _stack_over_grid(result["data"][arm], grid, "weights").to_csv(wpath, index=False)
             _stack_over_grid(result["data"][arm], grid, "metrics").to_csv(mpath, index=False)
             paths[f"{arm}_seed{seed}_weights"] = wpath
+            paths[f"{arm}_seed{seed}_metrics"] = mpath
 
     for arm in arms:
         table = pd.DataFrame(index=pd.Index(grid, name="n"))
