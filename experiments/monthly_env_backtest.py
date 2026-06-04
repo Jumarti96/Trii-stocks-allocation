@@ -62,3 +62,29 @@ def build_monthly_cfg(weekly_cfg, horizon):
 def select_all(prices, rets, cfg):
     """Filter-disabling selection seam: every name is eligible (no technical gate)."""
     return list(rets.columns)
+
+
+def run_monthly_env(prices, rets, weekly_cfg, horizons, seeds, oos_periods,
+                    n_runs, mc_draws, spreads, runs_fn=None, period_mu_fn=None,
+                    seed_fn=None):
+    """Run the monthly backtest over horizons x seeds; filter disabled via select_all.
+
+    Arms = current + one parametric arm per spread + equal_weight. For each horizon a monthly cfg
+    is built (periods_to_forecast = rebalance_every = horizon) and run_backtest is called once per
+    seed. The *_fn args are dependency-injection seams passed straight through to run_backtest so
+    the loop runs without torch. Returns {horizon: {"cfg": cfg_h, "per_seed": {seed: results}}}.
+    """
+    arms = ["current"] + [("parametric", s) for s in spreads] + ["equal_weight"]
+    out = {}
+    for horizon in horizons:
+        cfg_h = build_monthly_cfg(weekly_cfg, horizon)
+        per_seed = {}
+        for seed in seeds:
+            per_seed[seed] = run_backtest(
+                prices, rets, cfg_h, oos_periods=oos_periods, rebalance_every=horizon,
+                n_runs=n_runs, mc_draws=mc_draws, spreads=spreads, seed=seed, arms=arms,
+                select_fn=select_all, runs_fn=runs_fn, period_mu_fn=period_mu_fn,
+                seed_fn=seed_fn,
+            )
+        out[horizon] = {"cfg": cfg_h, "per_seed": per_seed}
+    return out
