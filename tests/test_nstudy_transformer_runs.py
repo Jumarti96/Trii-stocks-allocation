@@ -33,3 +33,17 @@ def test_prefix_forecast_averages_first_n_runs():
     # first 2 runs averaged: A=(1+3)/2=2, B=(2+4)/2=3; period-mean leaves them unchanged
     assert mu["A"] == pytest.approx(2.0)
     assert mu["B"] == pytest.approx(3.0)
+
+
+def test_parametric_arm_draws_are_paired_across_spreads():
+    names = ["A", "B", "C"]
+    mu = pd.Series([0.01, 0.02, 0.03], index=names)
+    cov = pd.DataFrame(np.eye(3) * 0.04, index=names, columns=names)
+    draws = ns.parametric_arm_draws(
+        mu, cov, n_periods=100, n_draws=5, spreads=[4.0, 8.0], rng_seed=(7, 25)
+    )
+    # same z reused -> s=8 perturbation is exactly 2x the s=4 perturbation
+    for k in range(5):
+        d4 = draws[4.0][k] - mu
+        d8 = draws[8.0][k] - mu
+        assert np.allclose(d8.values, 2.0 * d4.values)

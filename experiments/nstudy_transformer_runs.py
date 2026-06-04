@@ -54,3 +54,17 @@ def prefix_forecast(runs, n, rets, winsorize_fn, period_mu_fn):
     prefix = runs[:n].mean(axis=0)
     preds_df = winsorize_fn(pd.DataFrame(prefix, columns=rets.columns), rets)
     return period_mu_fn(preds_df)
+
+
+def parametric_arm_draws(mu_sel, cov_sel, n_periods, n_draws, spreads, rng_seed):
+    """K Monte-Carlo mu draws per spread, all sharing the same z for a paired s-comparison.
+
+    A fresh rng is re-seeded from rng_seed for every spread, so the standard-normal draws
+    are identical across spreads and the only difference is the s scaling. Returns
+    {spread: [Series, ...]} preserving mu_sel's index.
+    """
+    out = {}
+    for s in spreads:
+        rng = np.random.default_rng(rng_seed)
+        out[s] = sample_mu_draws(mu_sel, cov_sel, n_periods, n_draws, s, rng)
+    return out
