@@ -149,3 +149,69 @@ def run_nstudy_seed(prices, rets, cfg, grid, iterations, seed, spreads, n_draws,
         for arm in arms
     }
     return {"selected": selected, "arms": arms, "grid": grid, "data": data}
+
+
+def seed_arm_metrics(seed_result):
+    """Per-(arm, n) scalar metrics for one seed (one row per arm x n)."""
+    rows = []
+    for arm in seed_result["arms"]:
+        for n in seed_result["grid"]:
+            w = seed_result["data"][arm][n]["weights"]
+            m = seed_result["data"][arm][n]["metrics"]
+            ov = overlap_stats(w)
+            disp = metric_dispersion(m)
+            rows.append({
+                "arm": arm, "n": n,
+                "turnover": mean_turnover(w),
+                "jaccard": mean_jaccard(w),
+                "overlap_fraction": ov["fraction"],
+                "held": ov["held"],
+                "ret_mean": disp["ret"]["mean"], "ret_cov": disp["ret"]["cov"],
+                "vol_mean": disp["vol"]["mean"], "vol_cov": disp["vol"]["cov"],
+                "sharpe_mean": disp["sharpe"]["mean"], "sharpe_cov": disp["sharpe"]["cov"],
+            })
+    return pd.DataFrame(rows)
+
+
+METRIC_COLS = [
+    "turnover", "jaccard", "overlap_fraction", "held",
+    "ret_mean", "ret_cov", "vol_mean", "vol_cov", "sharpe_mean", "sharpe_cov",
+]
+
+
+def summarize_nstudy(results_by_seed):
+    """Aggregate per-(arm, n) scalar metrics across seeds as mean and population std.
+
+    Returns {"mean": DataFrame, "std": DataFrame, "metric_cols": [...], "arms": [...],
+    "grid": [...]} where mean/std are indexed by (arm, n).
+    """
+    per_seed = [seed_arm_metrics(r) for r in results_by_seed.values()]
+    allm = pd.concat(per_seed, ignore_index=True)
+    grouped = allm.groupby(["arm", "n"])[METRIC_COLS]
+    any_result = next(iter(results_by_seed.values()))
+    return {
+        "mean": grouped.mean(),
+        "std": grouped.std(ddof=0),
+        "metric_cols": METRIC_COLS,
+        "arms": any_result["arms"],
+        "grid": any_result["grid"],
+    }
+
+
+def first_flattening_n(values_by_n, grid, tol=0.05):
+    """First n in grid whose value changed < tol (relative) vs the previous grid point.
+
+    Advisory only -- a hint at where a metric stops moving, not a verdict. Returns None
+    if no consecutive pair falls under tol.
+    """
+    grid = sorted(grid)
+    for prev, n in zip(grid[:-1], grid[1:]):
+        base = values_by_n.get(prev)
+        if base is None or (isinstance(base, float) and math.isnan(base)) or base == 0:
+            continue
+        cur = values_by_n.get(n)
+        if cur is None or (isinstance(cur, float) and math.isnan(cur)):
+            continue
+        if abs(cur - base) / abs(base) < tol:
+            return n
+    return None

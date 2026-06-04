@@ -94,3 +94,49 @@ def test_run_nstudy_seed_shapes_and_arms(tiny_cfg):
     assert list(m.columns) == ["ret", "vol", "sharpe"]
     assert m.shape == (2, 3)
     assert result["data"]["current"][2]["weights"].shape == (2, 5)
+
+
+def _fake_seed_result(arms, grid, weights_by_arm_n, metrics_by_arm_n):
+    data = {
+        arm: {
+            n: {
+                "weights": weights_by_arm_n[arm][n],
+                "metrics": metrics_by_arm_n[arm][n],
+            }
+            for n in grid
+        }
+        for arm in arms
+    }
+    return {"selected": list(weights_by_arm_n[arms[0]][grid[0]].columns),
+            "arms": arms, "grid": grid, "data": data}
+
+
+def test_summarize_nstudy_mean_and_std_across_seeds():
+    arms, grid = ["current"], [10]
+    names = ["A", "B"]
+    metrics = pd.DataFrame({"ret": [0.02, 0.02], "vol": [0.1, 0.1], "sharpe": [0.2, 0.2]})
+
+    # seed 0: weights churn between iterations -> turnover 1.0
+    w_churn = pd.DataFrame([[1.0, 0.0], [0.0, 1.0]], columns=names)
+    # seed 1: identical weights -> turnover 0.0
+    w_same = pd.DataFrame([[1.0, 0.0], [1.0, 0.0]], columns=names)
+
+    r0 = _fake_seed_result(arms, grid, {"current": {10: w_churn}}, {"current": {10: metrics}})
+    r1 = _fake_seed_result(arms, grid, {"current": {10: w_same}}, {"current": {10: metrics}})
+
+    summary = ns.summarize_nstudy({0: r0, 1: r1})
+    mean = summary["mean"]
+    std = summary["std"]
+    # turnover mean over seeds = (1.0 + 0.0)/2 = 0.5; population std = 0.5
+    assert mean.loc[("current", 10), "turnover"] == pytest.approx(0.5)
+    assert std.loc[("current", 10), "turnover"] == pytest.approx(0.5)
+
+
+def test_first_flattening_n_finds_first_small_delta():
+    grid = [10, 25, 50, 75, 100]
+    # big drops early, then flat from 75 on
+    values = {10: 0.84, 25: 0.74, 50: 0.66, 75: 0.65, 100: 0.648}
+    assert ns.first_flattening_n(values, grid, tol=0.05) == 75
+    # never flattens
+    steep = {10: 0.84, 25: 0.6, 50: 0.4, 75: 0.25, 100: 0.1}
+    assert ns.first_flattening_n(steep, grid, tol=0.05) is None
