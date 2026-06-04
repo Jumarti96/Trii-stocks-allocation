@@ -103,3 +103,19 @@ def test_aggregate_across_seeds_mean_and_std():
     # seed0 cum = 1.02^3-1 ~ 0.0612; seed1 cum = 1.04^3-1 ~ 0.1249
     assert cur_mean == pytest.approx((0.061208 + 0.124864) / 2, abs=1e-4)
     assert cur_std == pytest.approx(abs(0.061208 - 0.124864) / 2, abs=1e-4)
+
+
+def test_format_monthly_summary_content():
+    cfg = meb.build_monthly_cfg(_weekly_cfg(), horizon=6)
+    seed0 = {"current": _fake_arm([0.02] * 9),
+             "equal_weight": _fake_arm([0.01] * 9),
+             "rebalance_index": list(range(9))}
+    agg = meb.aggregate_across_seeds({0: seed0}, cfg, rebalance_every=6)
+    text = meb.format_monthly_summary({6: agg})
+
+    assert "horizon 6-month" in text
+    assert "blocks: 9" in text
+    assert "DIRECTIONAL" in text          # <15 blocks caveat fires
+    assert "current" in text
+    assert "equal_weight" in text
+    assert "filter DISABLED" in text

@@ -124,3 +124,26 @@ def aggregate_across_seeds(per_seed, cfg, rebalance_every):
     table = pd.DataFrame(rows).set_index("arm")
     n_blocks = len(per_seed[seeds[0]][labels[0]]["block_returns"])
     return {"table": table, "n_blocks": n_blocks, "metric_cols": METRIC_COLS}
+
+
+def format_monthly_summary(agg_by_horizon, few_blocks=15):
+    """Per-horizon realized metric tables (mean +/- cross-seed std) with block counts + caveats."""
+    lines = ["Monthly environment-robustness backtest (mean +/- cross-seed std)", ""]
+    for horizon in sorted(agg_by_horizon):
+        a = agg_by_horizon[horizon]
+        lines.append(f"== horizon {horizon}-month | blocks: {a['n_blocks']} ==")
+        if a["n_blocks"] < few_blocks:
+            lines.append("  (few blocks -> realized stats are DIRECTIONAL, not a verdict)")
+        for arm, r in a["table"].iterrows():
+            cells = "  ".join(
+                f"{c}={r[f'{c}_mean']:.4f}+/-{r[f'{c}_std']:.4f}" for c in a["metric_cols"]
+            )
+            lines.append(f"  {arm:<16} {cells}")
+        lines.append("")
+    lines.append(
+        "Note: technical filter DISABLED (full universe). equal_weight = 1/N anchor; an optimizer "
+        "arm that fails to beat it adds no value in this regime. This filter-off MONTHLY result is "
+        "confounded with the weekly->monthly change -- NOT clean evidence for removing the filter "
+        "from production (that needs its own weekly with-vs-without A/B)."
+    )
+    return "\n".join(lines)
