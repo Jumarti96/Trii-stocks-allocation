@@ -68,3 +68,84 @@ def parametric_arm_draws(mu_sel, cov_sel, n_periods, n_draws, spreads, rng_seed)
         rng = np.random.default_rng(rng_seed)
         out[s] = sample_mu_draws(mu_sel, cov_sel, n_periods, n_draws, s, rng)
     return out
+
+
+def run_nstudy_seed(prices, rets, cfg, grid, iterations, seed, spreads, n_draws,
+                    train_runs_fn=None, winsorize_fn=None, period_mu_fn=None,
+                    select_fn=None, seed_fn=None, verbose=False):
+    """Run `iterations` passes for one seed and collect per-(arm, n) weights + metrics.
+
+    Sigma (Ledoit-Wolf) and the selected names are deterministic and computed once. Per
+    iteration, train max(grid) runs once (train_runs_fn) and derive mu(n) from the first-n
+    prefix for each n. The current arm allocates mu(n) via the msr elimination loop; each s
+    arm draws K parametric mu vectors (paired across spreads) and forms the resampled
+    consensus. All arms are scored against the same mu(n). The *_fn args are
+    dependency-injection seams (lazy real defaults) so the loop runs without torch.
+
+    Returns {"selected": [...], "arms": [...], "grid": [...],
+             "data": {arm: {n: {"weights": DataFrame, "metrics": DataFrame}}}}.
+    """
+    if train_runs_fn is None or winsorize_fn is None or period_mu_fn is None:
+        from transformer_model import train_runs, winsorize_to_history, weighted_mean_return
+        train_runs_fn = train_runs_fn or train_runs
+        winsorize_fn = winsorize_fn or winsorize_to_history
+        period_mu_fn = period_mu_fn or weighted_mean_return
+    if select_fn is None:
+        select_fn = select_stocks
+    if seed_fn is None:
+        seed_fn = seed_everything
+
+    rf = cfg["rf_period"]
+    grid = sorted(grid)
+    max_n = max(grid)
+    T = len(rets)
+
+    covmat = pd.DataFrame(
+        LedoitWolf().fit(rets).covariance_, index=rets.columns, columns=rets.columns
+    )
+    selected = select_fn(prices, rets, cfg)
+    cov_sel = covmat.loc[selected, selected]
+
+    arms = ["current"] + [f"s{int(s)}" for s in spreads]
+    rec = {arm: {n: {"w": [], "m": []} for n in grid} for arm in arms}
+
+    start = time.time()
+    for i in range(1, iterations + 1):
+        seed_fn(seed + i)
+        runs = train_runs_fn(rets, cfg, n_runs=max_n)
+        for n in grid:
+            mu_sel = prefix_forecast(runs, n, rets, winsorize_fn, period_mu_fn).loc[selected]
+
+            w_cur = allocate_msr(mu_sel, cov_sel, cfg)
+            rec["current"][n]["w"].append(w_cur)
+            rec["current"][n]["m"].append(
+                portfolio_metrics(w_cur[w_cur.abs() > 1e-9], mu_sel, cov_sel, rf)
+            )
+
+            draws_by_s = parametric_arm_draws(
+                mu_sel, cov_sel, T, n_draws, spreads, (seed + i, n)
+            )
+            for s in spreads:
+                w_s, _ = resampled_allocate(draws_by_s[s], cov_sel, cfg)
+                arm = f"s{int(s)}"
+                rec[arm][n]["w"].append(w_s)
+                rec[arm][n]["m"].append(
+                    portfolio_metrics(w_s[w_s.abs() > 1e-9], mu_sel, cov_sel, rf)
+                )
+        if verbose:
+            elapsed = time.time() - start
+            eta = elapsed / i * (iterations - i)
+            print(f"[seed {seed}] iter {i}/{iterations} | elapsed {elapsed:6.0f}s "
+                  f"| ETA {eta:6.0f}s", flush=True)
+
+    data = {
+        arm: {
+            n: {
+                "weights": pd.DataFrame(rec[arm][n]["w"]).reset_index(drop=True),
+                "metrics": pd.DataFrame(rec[arm][n]["m"]),
+            }
+            for n in grid
+        }
+        for arm in arms
+    }
+    return {"selected": selected, "arms": arms, "grid": grid, "data": data}

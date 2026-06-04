@@ -47,3 +47,50 @@ def test_parametric_arm_draws_are_paired_across_spreads():
         d4 = draws[4.0][k] - mu
         d8 = draws[8.0][k] - mu
         assert np.allclose(d8.values, 2.0 * d4.values)
+
+
+@pytest.fixture
+def tiny_cfg():
+    return {
+        "rf_period": 0.0,
+        "max_weight": 0.5,
+        "min_weight": 0.05,
+        "periods_per_year": 54,
+    }
+
+
+def _make_stub_runs_fn(n_stocks, periods=4):
+    """Deterministic per-iteration runs: shape (n_runs, periods, n_stocks)."""
+    rng = np.random.default_rng(0)
+
+    def _runs_fn(rets, cfg, n_runs=None, verbose=False):
+        return rng.normal(0.01, 0.005, size=(n_runs, periods, n_stocks))
+
+    return _runs_fn
+
+
+def test_run_nstudy_seed_shapes_and_arms(tiny_cfg):
+    cols = ["A", "B", "C", "D", "E"]
+    rng = np.random.default_rng(1)
+    rets = pd.DataFrame(rng.normal(0, 0.02, size=(40, 5)), columns=cols)
+    prices = pd.DataFrame(np.ones((40, 5)), columns=cols)  # unused (select_fn injected)
+
+    result = ns.run_nstudy_seed(
+        prices, rets, tiny_cfg,
+        grid=[2, 3], iterations=2, seed=0, spreads=[4.0, 8.0], n_draws=8,
+        train_runs_fn=_make_stub_runs_fn(5),
+        winsorize_fn=_identity_winsorize,
+        period_mu_fn=_mean_period_mu,
+        select_fn=lambda p, r, c: cols,
+        seed_fn=lambda s: None,
+    )
+
+    assert result["arms"] == ["current", "s4", "s8"]
+    assert result["grid"] == [2, 3]
+    # weights: iterations x selected names; metrics: iterations x [ret, vol, sharpe]
+    w = result["data"]["s4"][3]["weights"]
+    m = result["data"]["s4"][3]["metrics"]
+    assert w.shape == (2, 5)
+    assert list(m.columns) == ["ret", "vol", "sharpe"]
+    assert m.shape == (2, 3)
+    assert result["data"]["current"][2]["weights"].shape == (2, 5)
