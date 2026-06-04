@@ -22,7 +22,8 @@ def _weekly_cfg():
 
 
 def test_build_monthly_cfg_sets_monthly_fields():
-    cfg = meb.build_monthly_cfg(_weekly_cfg(), horizon=6)
+    original = _weekly_cfg()
+    cfg = meb.build_monthly_cfg(original, horizon=6)
     assert cfg["interval"] == "1mo"
     assert cfg["periods_per_year"] == 12
     assert cfg["time_window"] == 12
@@ -30,8 +31,8 @@ def test_build_monthly_cfg_sets_monthly_fields():
     assert cfg["period_freq"] == "M"
     assert cfg["future_freq"] == "MS"
     assert cfg["rf_period"] == pytest.approx((1 + 0.11) ** (1 / 12) - 1)
-    # original weekly cfg is not mutated
-    assert _weekly_cfg()["periods_per_year"] == 54
+    # the exact dict passed in is not mutated in place
+    assert original["periods_per_year"] == 54
 
 
 def test_select_all_returns_every_name():

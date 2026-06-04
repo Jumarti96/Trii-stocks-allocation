@@ -16,7 +16,7 @@ def test_clean_drops_missing_and_builds_returns():
     raw = pd.DataFrame({
         "A": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
         "B": [20.0, 22.0, 24.0, 26.0, 28.0, 30.0],
-        "C": [5.0, np.nan, 7.0, 8.0, 9.0, 10.0],   # 1 NaN of 6 (>15%) -> dropped
+        "C": [5.0, np.nan, 7.0, 8.0, 9.0, 10.0],   # 1 NaN of 6 (~17% >= 15%) -> dropped
     }, index=idx)
 
     prices, rets = fmd.clean_to_prices_returns(raw, period_freq="M")

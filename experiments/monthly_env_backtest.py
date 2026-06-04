@@ -82,6 +82,8 @@ def run_monthly_env(prices, rets, weekly_cfg, horizons, seeds, oos_periods,
         for seed in seeds:
             per_seed[seed] = run_backtest(
                 prices, rets, cfg_h, oos_periods=oos_periods, rebalance_every=horizon,
+                # spreads is only used by run_backtest when arms is None; arms is pre-built
+                # above (parametric arms carry their own s), so spreads is inert here.
                 n_runs=n_runs, mc_draws=mc_draws, spreads=spreads, seed=seed, arms=arms,
                 select_fn=select_all, runs_fn=runs_fn, period_mu_fn=period_mu_fn,
                 seed_fn=seed_fn,
