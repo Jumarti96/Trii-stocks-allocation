@@ -73,3 +73,33 @@ def test_run_monthly_env_structure_and_arms():
     assert labels == ["current", "parametric_s4", "equal_weight"]
     # filter off -> equal_weight holds the full 6-name universe
     assert res["equal_weight"]["n_held"][0] == 6
+
+
+def _fake_arm(block_returns):
+    n = len(block_returns)
+    return {"block_returns": block_returns,
+            "turnover": [None] + [0.1] * (n - 1),
+            "n_held": [3] * n,
+            "weights": [pd.Series([1.0], index=["A"])] * n,
+            "dates": [f"2020-{i+1:02d}" for i in range(n)]}
+
+
+def test_aggregate_across_seeds_mean_and_std():
+    cfg = meb.build_monthly_cfg(_weekly_cfg(), horizon=1)
+    seed0 = {"current": _fake_arm([0.02, 0.02, 0.02]),
+             "equal_weight": _fake_arm([0.01, 0.01, 0.01]),
+             "rebalance_index": [10, 11, 12]}
+    seed1 = {"current": _fake_arm([0.04, 0.04, 0.04]),
+             "equal_weight": _fake_arm([0.01, 0.01, 0.01]),
+             "rebalance_index": [10, 11, 12]}
+
+    agg = meb.aggregate_across_seeds({0: seed0, 1: seed1}, cfg, rebalance_every=1)
+
+    assert agg["n_blocks"] == 3
+    table = agg["table"]
+    # constant-return arms -> zero vol -> NaN sharpe; check cum_return mean/std instead
+    cur_mean = table.loc["current", "cum_return_mean"]
+    cur_std = table.loc["current", "cum_return_std"]
+    # seed0 cum = 1.02^3-1 ~ 0.0612; seed1 cum = 1.04^3-1 ~ 0.1249
+    assert cur_mean == pytest.approx((0.061208 + 0.124864) / 2, abs=1e-4)
+    assert cur_std == pytest.approx(abs(0.061208 - 0.124864) / 2, abs=1e-4)

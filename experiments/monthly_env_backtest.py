@@ -88,3 +88,39 @@ def run_monthly_env(prices, rets, weekly_cfg, horizons, seeds, oos_periods,
             )
         out[horizon] = {"cfg": cfg_h, "per_seed": per_seed}
     return out
+
+
+def aggregate_across_seeds(per_seed, cfg, rebalance_every):
+    """Per-arm realized metrics aggregated across seeds as mean and population std.
+
+    per_seed: {seed: run_backtest result}. Uses backtest_allocation.summarize_arm with
+    blocks_per_year = periods_per_year / rebalance_every and the per-block rf. Returns
+    {"table": DataFrame indexed by arm with <metric>_mean/<metric>_std columns,
+    "n_blocks": int, "metric_cols": METRIC_COLS}.
+    """
+    blocks_per_year = cfg["periods_per_year"] / rebalance_every
+    rf_block = (1.0 + cfg["rf_period"]) ** rebalance_every - 1.0
+    seeds = list(per_seed.keys())
+    labels = [k for k in per_seed[seeds[0]] if k != "rebalance_index"]
+
+    per_seed_metrics = {
+        s: {lab: summarize_arm(per_seed[s][lab]["block_returns"],
+                               per_seed[s][lab]["turnover"],
+                               per_seed[s][lab]["n_held"],
+                               blocks_per_year, rf_block)
+            for lab in labels}
+        for s in seeds
+    }
+
+    rows = []
+    for lab in labels:
+        row = {"arm": lab}
+        for c in METRIC_COLS:
+            vals = np.array([per_seed_metrics[s][lab][c] for s in seeds], dtype=float)
+            row[f"{c}_mean"] = float(np.nanmean(vals))
+            row[f"{c}_std"] = float(np.nanstd(vals))
+        rows.append(row)
+
+    table = pd.DataFrame(rows).set_index("arm")
+    n_blocks = len(per_seed[seeds[0]][labels[0]]["block_returns"])
+    return {"table": table, "n_blocks": n_blocks, "metric_cols": METRIC_COLS}
