@@ -147,3 +147,22 @@ def format_monthly_summary(agg_by_horizon, few_blocks=15):
         "from production (that needs its own weekly with-vs-without A/B)."
     )
     return "\n".join(lines)
+
+
+def write_monthly_outputs(run_out, agg_by_horizon, outdir):
+    """Write per-(horizon, seed) raw CSVs, per-horizon aggregated tables, and the summary text."""
+    os.makedirs(outdir, exist_ok=True)
+    paths = {"summary": os.path.join(outdir, "monthly_env_summary.txt")}
+
+    for horizon, hd in run_out.items():
+        cfg_h = hd["cfg"]
+        for seed, res in hd["per_seed"].items():
+            sub = os.path.join(outdir, f"h{horizon}_seed{seed}")
+            write_backtest_outputs(res, cfg_h, horizon, sub)
+        tpath = os.path.join(outdir, f"monthly_table_h{horizon}.csv")
+        agg_by_horizon[horizon]["table"].to_csv(tpath)
+        paths[f"table_h{horizon}"] = tpath
+
+    with open(paths["summary"], "w") as f:
+        f.write(format_monthly_summary(agg_by_horizon))
+    return paths

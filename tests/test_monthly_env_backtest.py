@@ -119,3 +119,19 @@ def test_format_monthly_summary_content():
     assert "current" in text
     assert "equal_weight" in text
     assert "filter DISABLED" in text
+
+
+def test_write_monthly_outputs_creates_files(tmp_path):
+    cfg = meb.build_monthly_cfg(_weekly_cfg(), horizon=1)
+    seed0 = {"current": _fake_arm([0.02, 0.03, 0.01]),
+             "equal_weight": _fake_arm([0.01, 0.01, 0.02]),
+             "rebalance_index": [10, 11, 12]}
+    agg = meb.aggregate_across_seeds({0: seed0}, cfg, rebalance_every=1)
+    run_out = {1: {"cfg": cfg, "per_seed": {0: seed0}}}
+
+    outdir = str(tmp_path / "monthly_env")
+    paths = meb.write_monthly_outputs(run_out, {1: agg}, outdir)
+
+    assert os.path.exists(paths["summary"])
+    assert os.path.exists(os.path.join(outdir, "monthly_table_h1.csv"))
+    assert os.path.exists(os.path.join(outdir, "h1_seed0", "backtest_summary.txt"))
