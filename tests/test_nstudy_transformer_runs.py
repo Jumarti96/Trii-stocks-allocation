@@ -181,3 +181,16 @@ def test_write_nstudy_outputs_creates_files(tmp_path):
     raw = pd.read_csv(os.path.join(outdir, "nstudy_s4_seed0_weights.csv"))
     assert len(raw) == 4
     assert {"n", "iteration"}.issubset(raw.columns)
+
+
+def test_arg_parser_parses_lists():
+    parser = ns.build_arg_parser()
+    args = parser.parse_args(
+        ["--seeds", "0,100", "--grid", "10,25,50", "--spreads", "4,8",
+         "--iterations", "10", "--mc-draws", "1000"]
+    )
+    assert [int(x) for x in args.seeds.split(",")] == [0, 100]
+    assert [int(x) for x in args.grid.split(",")] == [10, 25, 50]
+    assert [float(x) for x in args.spreads.split(",")] == [4.0, 8.0]
+    assert args.iterations == 10
+    assert args.mc_draws == 1000

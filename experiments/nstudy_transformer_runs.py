@@ -300,3 +300,59 @@ def write_nstudy_outputs(results_by_seed, summary, outdir):
     with open(paths["summary"], "w") as f:
         f.write(format_nstudy_summary(summary))
     return paths
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--seeds", type=str, default="0,100",
+                        help="Comma-separated base seeds (default 0,100; spaced >= iterations)")
+    parser.add_argument("--iterations", type=int, default=10,
+                        help="predict->allocate passes per seed (default 10)")
+    parser.add_argument("--grid", type=str, default="10,25,50,75,100",
+                        help="Comma-separated n_transformer_runs values")
+    parser.add_argument("--spreads", type=str, default="4,8",
+                        help="Comma-separated parametric-Michaud spreads s (default 4,8)")
+    parser.add_argument("--mc-draws", type=int, default=1000,
+                        help="K Monte-Carlo mu draws per consensus (default 1000)")
+    parser.add_argument("--outdir", type=str,
+                        default=os.path.join(BASE_DIR, "experiments", "results", "nstudy"),
+                        help="Directory for output CSVs and summary")
+    return parser
+
+
+def main():
+    args = build_arg_parser().parse_args()
+    cfg = load_config()
+    prices = pd.read_csv(PATHS["01_prices"], index_col=0)
+    rets = pd.read_csv(PATHS["01_returns"], index_col=0)
+
+    seeds = [int(x) for x in args.seeds.split(",")]
+    grid = [int(x) for x in args.grid.split(",")]
+    spreads = [float(x) for x in args.spreads.split(",")]
+
+    print(f"Universe: {rets.shape[1]} stocks | seeds={seeds} | iterations={args.iterations} "
+          f"| grid={grid} | spreads={spreads} | K={args.mc_draws}", flush=True)
+
+    results_by_seed = {}
+    for seed in seeds:
+        print(f"=== seed {seed} ===", flush=True)
+        results_by_seed[seed] = run_nstudy_seed(
+            prices, rets, cfg,
+            grid=grid, iterations=args.iterations, seed=seed,
+            spreads=spreads, n_draws=args.mc_draws, verbose=True,
+        )
+
+    summary = summarize_nstudy(results_by_seed)
+    paths = write_nstudy_outputs(results_by_seed, summary, args.outdir)
+
+    print()
+    print(format_nstudy_summary(summary))
+    print("\nSaved:")
+    for p in sorted(set(paths.values())):
+        print(f"       {p}")
+
+
+if __name__ == "__main__":
+    main()
