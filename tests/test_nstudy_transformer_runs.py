@@ -159,3 +159,25 @@ def test_format_nstudy_summary_has_arms_and_advisory():
     assert "turnover" in text
     # s4 turnover is flat across n (both = 1.0) -> advisory fires at n=25
     assert "turnover flattens at n=25" in text
+
+
+def test_write_nstudy_outputs_creates_files(tmp_path):
+    arms, grid = ["current", "s4"], [10, 25]
+    names = ["A", "B"]
+    metrics = pd.DataFrame({"ret": [0.02, 0.02], "vol": [0.1, 0.1], "sharpe": [0.2, 0.2]})
+    w = pd.DataFrame([[1.0, 0.0], [0.6, 0.4]], columns=names)
+    weights = {a: {n: w for n in grid} for a in arms}
+    mets = {a: {n: metrics for n in grid} for a in arms}
+    r = _fake_seed_result(arms, grid, weights, mets)
+    summary = ns.summarize_nstudy({0: r})
+
+    outdir = str(tmp_path / "nstudy")
+    paths = ns.write_nstudy_outputs({0: r}, summary, outdir)
+
+    assert os.path.exists(paths["summary"])
+    assert os.path.exists(os.path.join(outdir, "nstudy_current_seed0_weights.csv"))
+    assert os.path.exists(os.path.join(outdir, "nstudy_table_s4.csv"))
+    # raw weights reload: 2 iterations x 2 grid points = 4 rows, with n + iteration cols
+    raw = pd.read_csv(os.path.join(outdir, "nstudy_s4_seed0_weights.csv"))
+    assert len(raw) == 4
+    assert {"n", "iteration"}.issubset(raw.columns)

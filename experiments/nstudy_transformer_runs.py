@@ -259,3 +259,44 @@ def format_nstudy_summary(summary, primary_arm="s4", tol=0.05):
         "the backtest study."
     )
     return "\n".join(lines)
+
+
+def _stack_over_grid(arm_data, grid, value="weights"):
+    """Concatenate a single arm's per-n frames into one frame with n + iteration columns."""
+    frames = []
+    for n in grid:
+        df = arm_data[n][value].copy()
+        df.index.name = "iteration"
+        df = df.reset_index()
+        df.insert(0, "n", n)
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
+def write_nstudy_outputs(results_by_seed, summary, outdir):
+    """Write per-seed raw CSVs, per-arm aggregated tables, and the summary text."""
+    os.makedirs(outdir, exist_ok=True)
+    grid = summary["grid"]
+    arms = summary["arms"]
+    paths = {"summary": os.path.join(outdir, "nstudy_summary.txt")}
+
+    for seed, result in results_by_seed.items():
+        for arm in arms:
+            wpath = os.path.join(outdir, f"nstudy_{arm}_seed{seed}_weights.csv")
+            mpath = os.path.join(outdir, f"nstudy_{arm}_seed{seed}_metrics.csv")
+            _stack_over_grid(result["data"][arm], grid, "weights").to_csv(wpath, index=False)
+            _stack_over_grid(result["data"][arm], grid, "metrics").to_csv(mpath, index=False)
+            paths[f"{arm}_seed{seed}_weights"] = wpath
+
+    for arm in arms:
+        table = pd.DataFrame(index=pd.Index(grid, name="n"))
+        for c in summary["metric_cols"]:
+            table[f"{c}_mean"] = [summary["mean"].loc[(arm, n), c] for n in grid]
+            table[f"{c}_std"] = [summary["std"].loc[(arm, n), c] for n in grid]
+        tpath = os.path.join(outdir, f"nstudy_table_{arm}.csv")
+        table.to_csv(tpath)
+        paths[f"table_{arm}"] = tpath
+
+    with open(paths["summary"], "w") as f:
+        f.write(format_nstudy_summary(summary))
+    return paths
