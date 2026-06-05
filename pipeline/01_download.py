@@ -22,7 +22,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from config import load_config, PATHS, BASE_DIR
-from data_intake import load_tickers, download_all, liquidity_filter, grouping_health
+from data_intake import load_tickers, download_all, activity_filter, activity_health
 
 
 def main():
@@ -39,19 +39,19 @@ def main():
         print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
               f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
-    detail = liquidity_filter(
+    detail = activity_filter(
         close, volume,
-        window=cfg["liquidity_window"], pct_of_median=cfg["liquidity_pct_of_median"],
-        min_group_size=cfg["liquidity_min_group_size"],
+        window=cfg["liquidity_window"],
+        min_active_fraction=cfg["liquidity_min_active_fraction"],
     )
-    health = grouping_health(detail)
-    print(f"Grouping: {health['n_groups']} groups | OTHER bucket "
-          f"{health['other_fraction']:.0%} | flagged groups: {health['flagged_groups']}")
-    if health["other_fraction"] > 0.25:
-        print("  WARNING: large OTHER bucket -> the ticker list may not fit the grouping patterns.")
+    health = activity_health(detail)
+    print(f"Activity filter: kept {health['n_kept']}/{health['n_total']} "
+          f"(excluded {health['n_excluded']}; zero-volume {health['zero_volume_fraction']:.0%})")
+    if health["zero_volume_fraction"] > 0.25:
+        print("  WARNING: many stocks have no Volume at all -> likely a Volume data-source problem.")
 
     kept = detail.index[detail["kept"]]
-    print(f"Kept after liquidity filter: {len(kept)} / {close.shape[1]}")
+    print(f"Kept after activity filter: {len(kept)} / {close.shape[1]}")
 
     close_kept = close[kept]
     rets = close_kept.pct_change().iloc[1:]
