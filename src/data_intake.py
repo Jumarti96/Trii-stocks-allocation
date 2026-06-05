@@ -75,3 +75,58 @@ def clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15):
     close.index = close.index.astype("str").str.split("/").str[-1]
     volume.index = volume.index.astype("str").str.split("/").str[-1]
     return close, volume
+
+
+import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def download_batch(batch, cfg):
+    """Download one batch's Close+Volume from yfinance and clean it. Returns (close, volume) or None.
+
+    Network. Extracts the Close and Volume sub-frames (multi-field columns for >1 ticker; single
+    field set for 1 ticker), then clean_batch. One light retry on exception.
+    """
+    import yfinance as yf
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=cfg["days_of_data"])
+    for attempt in (1, 2):
+        try:
+            raw = yf.download(batch, interval=cfg["interval"], start=start, end=end,
+                              auto_adjust=True, threads=True, timeout=cfg["download_timeout"],
+                              progress=False)
+            if raw is None or raw.empty:
+                return None
+            if isinstance(raw.columns, pd.MultiIndex):
+                close_raw, volume_raw = raw["Close"], raw["Volume"]
+            else:  # single ticker -> flat columns
+                close_raw = raw[["Close"]].rename(columns={"Close": batch[0]})
+                volume_raw = raw[["Volume"]].rename(columns={"Volume": batch[0]})
+            return clean_batch(close_raw, volume_raw, cfg["period_freq"])
+        except Exception as e:  # noqa: BLE001 - batch-level resilience at scale
+            if attempt == 2:
+                print(f"  batch failed ({len(batch)} tickers): {e}")
+                return None
+
+
+def download_all(tickers, cfg, download_fn=None):
+    """Download all tickers in parallel batches and concat into aligned (close, volume) frames.
+
+    download_fn(batch) -> (close, volume) | None is a DI seam (default: download_batch with cfg).
+    Raises RuntimeError if every batch fails.
+    """
+    if download_fn is None:
+        download_fn = lambda batch: download_batch(batch, cfg)  # noqa: E731
+    batches = make_batches(tickers, cfg["batch_size"])
+    closes, volumes = [], []
+    with ThreadPoolExecutor(max_workers=cfg["download_workers"]) as ex:
+        futures = {ex.submit(download_fn, b): b for b in batches if b}
+        for fut in as_completed(futures):
+            res = fut.result()
+            if res is not None:
+                c, v = res
+                closes.append(c)
+                volumes.append(v)
+    if not closes:
+        raise RuntimeError("No data downloaded across all batches.")
+    return pd.concat(closes, axis=1), pd.concat(volumes, axis=1)

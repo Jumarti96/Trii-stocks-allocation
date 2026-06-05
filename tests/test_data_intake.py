@@ -49,3 +49,24 @@ def test_clean_batch_drops_missing_and_aligns_volume():
     assert list(c.columns) == ["A"]          # B dropped for missing
     assert list(v.columns) == ["A"]          # volume aligned to kept names
     assert isinstance(c.index[0], str)        # period-end string index
+
+
+def test_download_all_concats_batches_with_stub():
+    idx = ["2020-01", "2020-02"]
+    def stub_download_fn(batch):
+        # each batch returns its own 1-col close+volume
+        name = batch[0]
+        c = pd.DataFrame({name: [1.0, 2.0]}, index=idx)
+        v = pd.DataFrame({name: [10.0, 20.0]}, index=idx)
+        return c, v
+    cfg = {"batch_size": 1, "download_workers": 2}
+    close, volume = di.download_all(["A", "B"], cfg, download_fn=stub_download_fn)
+    assert sorted(close.columns) == ["A", "B"]
+    assert sorted(volume.columns) == ["A", "B"]
+    assert len(close) == 2
+
+
+def test_download_all_raises_if_all_fail():
+    cfg = {"batch_size": 1, "download_workers": 2}
+    with pytest.raises(RuntimeError):
+        di.download_all(["A"], cfg, download_fn=lambda batch: None)
