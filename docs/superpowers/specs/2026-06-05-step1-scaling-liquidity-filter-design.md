@@ -1,22 +1,37 @@
-# Step-1 scaling + relative-liquidity filter (PR-1) — design
+# Step-1 scaling + activity liquidity filter (PR-1) — design
 
 Date: 2026-06-05
 Status: approved (pending spec review)
+
+## Revision note (2026-06-05)
+
+PR-1 was first built with a **relative dollar-volume within market groups** filter (keep ≥ X% of
+the market-group median). Calibration on the real data showed it **over-excludes well-traded
+names**: because each market group contains a few giants, the group median is enormous (~$6B/week),
+so "10% of median" lands at a ~$630M/week bar and drops genuinely liquid stocks (BAP $536M/wk, JETS,
+BVN, the Colombian names) purely for being small *relative to the mega-caps in their group*. A
+relative-rank rule always trims the tail of every group — it "excludes for the sake of it," the
+exact thing to avoid. KEY REFRAME: the deployed capital is ~115M COP (~$28k), max_weight 0.15 → a
+single position is ≤ ~$4k, so liquidity *magnitude* is nearly irrelevant; the only thing that makes
+a stock genuinely hard to trade is that it **rarely trades at all**. This revision replaces the
+relative-magnitude filter with an **activity (frequency-of-trading) filter** — currency-free,
+grouping-free, and aligned with the actual goal. The download/parallel-batch machinery (already
+built) is unchanged. A price-performance ("down >90% from peak", the old PRC signal) screen was
+considered and **rejected**: it is return-based universe selection (survivorship/look-ahead bias —
+the same class we removed the technical filter to avoid) and overlaps the activity filter for true
+junk.
 
 ## Purpose
 
 Rework pipeline step 1 so the allocation model works at **4,000+ stocks**, not just ~123:
 (a) download at scale via **parallel batches** fetching **Close + Volume**, and (b) prune the
-universe **early** (before training) with a **currency-robust relative-liquidity filter** that
-excludes thinly-traded "junk" and bounds downstream compute. Plus a **local calibration
-experiment** that sweeps the filter threshold over the real ticker sources so the production
-default is chosen empirically — the filter's purpose is to drop junk + save compute, not to
-exclude for its own sake.
+universe **early** (before training) with an **activity-based junk filter** that drops stocks which
+rarely trade (and the existing bad-data drop). Plus a **local calibration experiment** that sweeps
+the filter threshold over the real ticker sources so the production default is chosen empirically.
 
 Driver: the universe is moving from 123 tickers (`colombia_stocks_trii.csv` 36 +
-`global_stocks_trii.csv` 87) to a 3,918-ISIN list (`isins_list.csv`). The transformer trains and
-the optimizer runs over the surviving universe, so pruning illiquid names early is the lever that
-makes 4,000+ tractable.
+`global_stocks_trii.csv` 87) to a 3,918-ISIN list (`isins_list.csv`). Pruning genuinely-inactive
+names early keeps the surviving set sane for training/optimisation.
 
 ## Scope
 
@@ -24,8 +39,8 @@ This is **PR-1** of a two-part effort.
 
 In scope (PR-1):
 - **Production (pushed):** refactor `pipeline/01_download.py` into testable functions — robust
-  ticker loading, parallel batch download of Close+Volume, the relative-liquidity filter, and
-  pruned outputs; new `params.yaml` keys; unit tests shipped with the code.
+  ticker loading, parallel batch download of Close+Volume, the activity filter, and pruned outputs;
+  new `params.yaml` keys; unit tests shipped with the code.
 - **Local (not pushed):** `experiments/calibrate_liquidity_filter.py` — threshold-sweep over the
   ticker sources to pick the production default.
 
@@ -34,139 +49,129 @@ Out of scope:
   rewiring step 4 to optimise over the pruned universe. PR-1 leaves steps 2–4 working unchanged
   (they read the now-pruned `01_*` outputs).
 - ISIN→ticker resolution (yfinance reads ISINs directly).
-- FX/true-currency normalisation (the relative-within-market filter avoids needing it).
-- A top-N liquidity cap (config knob added but defaulted off — threshold-only per the decision).
+- Any liquidity-*magnitude* filtering, currency normalisation/FX, or market grouping (rejected — the
+  activity filter is currency-free; magnitude is irrelevant at the deployed position size).
+- A price-performance / drawdown-from-peak screen (rejected — return-based selection bias).
+- **Compute-bounding of the surviving universe** — calibration showed an activity/threshold filter
+  does not aggressively bound the count; that is a top-N cap, deferred to PR-2 (step 4 is what
+  chokes). `liquidity_topn` config knob added but defaulted off.
 
 ## Decisions (settled in brainstorm)
 
-- **Liquidity basis:** average **dollar-volume** (Close × Volume), averaged over a recent window.
-- **Currency-robustness:** **relative within market groups** — keep a stock iff its avg
-  dollar-volume ≥ `pct_of_median × (median avg dollar-volume of its market group)`. No FX, no
-  per-ticker currency lookups.
-- **Market group key (`market_key`):** ISIN country prefix (first 2 chars of a 12-char ISIN) →
-  e.g. `US`,`CO`,`KY`,`DE`; else ticker exchange suffix after `.`; else `OTHER` (catch-all bucket).
-  **Caveat:** the ISIN prefix is issuer *domicile*, not always trading *currency* (e.g. `KY` ISINs
-  are often USD ADRs). It correlates strongly with currency in practice; the calibration
-  experiment validates that the grouping behaves sensibly before the default is trusted.
+- **Filter basis:** **activity** — `active_fraction` = the fraction of the last `liquidity_window`
+  periods in which the stock has real (non-zero, non-NaN) Volume. Keep iff
+  `active_fraction ≥ liquidity_min_active_fraction`. Currency-free and unitless (no grouping, no FX).
+- **Data quality:** the existing **>15% missing-Close drop** (in `clean_batch`) stays as the
+  bad-data screen.
+- **No** `market_key` / market grouping / relative median / PRC / flatline rule.
+- **`avg_dollar_volume`** is still computed but only as an **informational column** in the audit
+  output (not used for any filtering decision).
 - **Placement:** early — in step 1, so `01_prices/returns` are written already pruned.
-- **Cut:** threshold-only (relative). `liquidity_topn` config exists but defaults `null`.
-- **Grouping robustness (conservative + self-reporting):** because the grouping may not fit an
-  arbitrary user list, a group whose size is `< min_group_size` is treated as having an unreliable
-  reference → **all its members are kept and flagged** (never drop stocks we can't reliably assess);
-  a zero-median group keeps only its actually-trading members (`avg dollar-volume > 0`) and is
-  flagged. Every run emits a **grouping-health diagnostic** (group count, fraction of tickers in the
-  unparseable `default` bucket, list of flagged groups) so a list that doesn't fit the patterns is
-  visible immediately. Locked with unit tests so this keeps working as ticker sources change.
+- **Self-reporting:** an **activity-health diagnostic** each run (how many excluded; warn if a large
+  fraction of stocks have zero/all-missing Volume, which signals a data-source problem).
 
 ## Part A — Production: `pipeline/01_download.py` rework
 
-Refactor the thin script into focused, importable functions (the calibration experiment and tests
-import them; refactoring is in-scope since the file is heavily changed).
+Refactor the thin script into focused, importable functions in `src/data_intake.py` (the
+calibration experiment and tests import them; `pipeline/01_download.py` is the thin orchestrator).
 
-- `load_tickers(csv_glob)` — read every `stock_tickers/*.csv` with **`encoding="utf-8-sig"`** (strip
-  BOM), coerce to str, strip whitespace, drop empty/`nan`, dedup. Returns a list of any size.
-- `make_batches(tickers, batch_size)` — split into `batch_size`-sized lists.
-- `download_batch(batch, cfg)` — `yf.download(batch, interval, start, end, auto_adjust=True,
-  threads=True, timeout=cfg['download_timeout'])`; extract the `Close` and `Volume` sub-frames
-  (yfinance multi-field columns); `to_period(period_freq)`; `groupby(level=0).first()` (native, no
-  lambda); drop tickers with >15% missing Close; ffill/bfill. Returns `(close_df, volume_df)` or
-  `None` on empty/failure. One light retry on exception.
-- `download_all(tickers, cfg)` — `ThreadPoolExecutor(max_workers=cfg['download_workers'])` over the
-  batches; collect successful `(close, volume)` pairs; `pd.concat` along columns into aligned
-  `close_all`, `volume_all`. Raise `RuntimeError` if all batches fail.
-- `market_key(identifier)` — as defined above.
-- `avg_dollar_volume(close, volume, window)` — `(close * volume)` per period, mean over the last
-  `window` periods, per ticker → a Series. NaN volume treated as 0.
-- `liquidity_filter(close, volume, window, pct_of_median, min_group_size, market_key_fn=market_key)`
-  — compute `avg_dollar_volume`; group tickers by `market_key`; per group:
-  - **size `< min_group_size`** (unreliable reference): keep all members, mark them flagged.
-  - **median == 0** (degenerate): keep only members with avg dollar-volume > 0, mark flagged.
-  - **otherwise**: keep members `≥ pct_of_median * group_median`.
-  Returns the kept names (and the per-stock group/flag detail consumed by `grouping_health`).
-- `grouping_health(detail)` — given the `liquidity_filter` detail frame, returns a report:
-  per-group count + median + n_kept, the flagged groups (any small / zero-median member), the total
-  group count, and the fraction of tickers landing in the `OTHER` catch-all bucket. Pure; drives the
-  run-time warning and the persisted audit.
-- `main()` — `load_tickers` → `download_all` → `grouping_health` (print the diagnostic: group
-  count, % in the `default` bucket, flagged groups; warn loudly if the default-bucket fraction
-  exceeds a sane bound, e.g. >25%, since that signals the list doesn't fit the patterns) →
-  `liquidity_filter` → build returns (`pct_change().iloc[1:]`) on the kept Close → period-end string
-  index → trim to window → write **pruned** `01_prices.csv` + `01_returns.csv`; also write
-  `01_liquidity.csv` (kept ticker, avg dollar-volume, market group, flag reason) for inspection /
-  audit. Print counts at each stage (loaded → downloaded valid → kept after liquidity) and step timer.
+Download machinery (UNCHANGED — already built):
+- `load_tickers(csv_glob)` — read every `stock_tickers/*.csv` with `encoding="utf-8-sig"` (strip
+  BOM), str-coerce, strip, drop empty/`nan`, dedup. Any size.
+- `make_batches(tickers, batch_size)`.
+- `clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15)` — period index,
+  `groupby(level=0).first()`, drop >15%-missing Close, ffill/bfill, align Volume to kept names,
+  string period-end index. Returns `(close, volume)`.
+- `download_batch(batch, cfg)` — yfinance Close+Volume (multi-field vs single-ticker forms) →
+  `clean_batch`; one light retry; `None` on empty/failure.
+- `download_all(tickers, cfg, download_fn=None)` — `ThreadPoolExecutor(max_workers=download_workers)`
+  over batches; concat to aligned `(close, volume)`; drops duplicate output columns (ISIN aliases);
+  `RuntimeError` if all batches fail.
 
-### Config additions (`params.yaml`)
+Filter (CHANGED — replaces `market_key` / `liquidity_filter` / `grouping_health`):
+- `avg_dollar_volume(close, volume, window)` — kept (informational only): mean of Close×Volume over
+  the last `window` periods, NaN→0.
+- `active_fraction(volume, window)` — per ticker, the fraction of the last `window` periods with
+  Volume > 0 (NaN counts as not-traded). Returns a Series in [0, 1].
+- `activity_filter(close, volume, window, min_active_fraction)` — keep iff
+  `active_fraction ≥ min_active_fraction`. Returns a per-ticker detail DataFrame
+  `[avg_dollar_volume, active_fraction, kept]` indexed by ticker.
+- `activity_health(detail)` — returns `{n_total, n_kept, n_excluded, zero_volume_fraction}`
+  (`zero_volume_fraction` = share of tickers with `active_fraction == 0`, i.e. no trading/volume at
+  all); drives the run-time warning + persisted audit.
+- `main()` (`pipeline/01_download.py`) — `load_tickers` → `download_all` → `activity_filter` →
+  `activity_health` (print n loaded/downloaded/kept; **warn if `zero_volume_fraction` is high**,
+  e.g. >25%, signalling a Volume data-source problem) → returns (`pct_change().iloc[1:]`) on the kept
+  Close → string index → write **pruned** `01_prices.csv` + `01_returns.csv`; also write
+  `01_liquidity.csv` (kept ticker, `avg_dollar_volume`, `active_fraction`, `kept`) for inspection.
+
+### Config (`params.yaml`)
 
 ```
 batch_size: 500             # tickers per download batch
 download_workers: 3         # parallel batch workers
-download_timeout: 10        # per-batch yfinance timeout (s)
-liquidity_window: 52        # periods for the avg dollar-volume (weekly -> ~1yr)
-liquidity_pct_of_median: 0.10   # keep >= 10% of market-group median (PLACEHOLDER; set from calibration)
-liquidity_min_group_size: 5     # groups smaller than this are kept-and-flagged (unreliable median)
-liquidity_topn: null        # optional cap (future knob; null = off)
+download_timeout: 30        # per-batch yfinance timeout (s)
+liquidity_window: 52        # periods for active_fraction / avg dollar-volume (weekly -> ~1yr)
+liquidity_min_active_fraction: 0.90   # keep stocks trading in >= 90% of recent periods (PLACEHOLDER; set from calibration)
+liquidity_topn: null        # optional compute-bound cap (future knob; null = off; deferred to PR-2)
 ```
+
+(Removed: `liquidity_pct_of_median`, `liquidity_min_group_size`.)
 
 ### Data flow / compatibility
 
-`01_prices/returns` keep the same string-period-end index format, only the column set changes
-(pruned). Steps 2–4 still read them and work unchanged at the new (smaller) universe size. Volume
-is transient except for the inspection `01_liquidity.csv`.
+`01_prices/returns` keep the same string-period-end index format; only the column set changes
+(pruned). Steps 2–4 read them unchanged. Volume is transient except for the audit `01_liquidity.csv`.
+Note: `liquidity_window` is in *periods*, so on monthly data (`interval: 1mo`) `52` means 52 months —
+revisit the value if the data frequency changes.
 
 ### Edge cases
 
-- yfinance ISIN inputs: column labels may come back as ISINs or resolved tickers — `market_key`
-  handles both; the smoke run confirms which.
+- yfinance ISIN inputs: column labels may be ISINs or resolved tickers — the filter is label-agnostic.
 - Batch failure/empty: logged, skipped, one retry; `RuntimeError` only if every batch fails.
-- Zero/NaN-volume stocks → avg dollar-volume 0 → excluded (untradeable), unless their group is
-  small (`< min_group_size`), where the conservative keep-and-flag rule applies.
-- Single-stock / tiny market group: `< min_group_size` → kept and flagged (never silently passed on
-  an unreliable self-median).
-- A list that doesn't fit the patterns (many unparseable IDs): they pool in the `default` bucket;
-  `grouping_health` surfaces the high default fraction and `main` warns.
+  Duplicate output columns (two inputs → one symbol) are de-duplicated in `download_all`.
+- A stock with all-zero / all-missing Volume → `active_fraction == 0` → excluded. If many stocks hit
+  this, `activity_health` warns (likely a Volume data-source issue, not real inactivity).
+- A stock with Close but genuinely sparse trading (frequent zero-volume weeks) → excluded by design
+  (that is the target).
 
 ## Part B — Local: `experiments/calibrate_liquidity_filter.py`
 
-Imports Part A's `download_all`, `avg_dollar_volume`, `market_key`, `liquidity_filter` (so it
-exercises the real production code, including the 3,918-ticker parallel download). Not pushed.
+Imports Part A's `download_all`, `avg_dollar_volume`, `active_fraction`, `activity_filter` (exercises
+the real production code at the 3,918-ticker scale). Not pushed.
 
-- For each **source set**, download Close+Volume **once**, then **sweep** `pct_of_median` over a
-  grid (default `[0, 0.01, 0.05, 0.10, 0.25, 0.50, 1.0]`), reporting **surviving count — total and
-  per market group** — at each threshold.
-- **Source sets:** (A) `isins_list.csv` (3,918 — scale + junk-pruning view); (B)
-  `colombia_stocks_trii.csv` + `global_stocks_trii.csv` (123 — the names we've been testing).
-- For set (B), also emit the **kept vs excluded named tickers** at each threshold, so the dropped
-  set can be eyeballed (junk, not good stocks).
-- Report **grouping health per source**: the group-size distribution, the fraction of tickers in
-  the `default` bucket, and the count of small/degenerate (flagged) groups — so we can see how well
-  the grouping fits each list (especially the 3,918 ISINs) before trusting the production default.
-- Outputs → `experiments/results/liquidity_calibration/`: a survival-vs-threshold table per source
-  (CSV + summary text), the excluded/kept name lists for set (B), and the grouping-health report.
-- **Purpose:** choose the production `liquidity_pct_of_median` default empirically and confirm the
-  filter drops junk while saving compute; validate the `market_key` grouping behaves sensibly
-  (the domicile-vs-currency caveat). Run after Part A is built; set the production default from it.
+- For each **source set**, download Close+Volume **once**, then **sweep** `min_active_fraction` over a
+  grid (default `[0, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0]`), reporting the **surviving count** at each
+  threshold (and the `zero_volume_fraction`).
+- **Source sets:** (A) `isins_list.csv` (3,918 — scale view); (B) `colombia_stocks_trii.csv` +
+  `global_stocks_trii.csv` (123 — the names we've been testing).
+- For set (B), also emit the **kept vs excluded named tickers** at a candidate threshold, to confirm
+  the previously-wrongly-excluded well-traded names (BAP/JETS/BVN/etc.) now survive and only genuine
+  low-activity names drop.
+- Outputs → `experiments/results/liquidity_calibration/`: a survival-vs-threshold table per source +
+  the kept/excluded name lists for set (B).
+- **Purpose:** choose the production `liquidity_min_active_fraction` default empirically and confirm
+  the filter keeps well-traded names while dropping only genuinely inactive ones. Run after Part A is
+  revised; set the production default from it.
 
 ## Testing
 
-Part A functions are unit-tested **torch-free and network-free** (tests ship with the PR):
-- `load_tickers` — BOM strip, whitespace/`nan`/empty hygiene, dedup, multi-file union.
-- `make_batches` — sizes/remainder.
-- `market_key` — ISIN prefix, ticker suffix, plain US, unparseable → default.
-- `avg_dollar_volume` — windowed mean of Close×Volume, NaN-volume → 0.
-- `liquidity_filter` — relative-within-group keep/drop (two groups with different scales; a stock
-  below 10% of its group median dropped, others kept); **small-group keep-and-flag** (group size
-  `< min_group_size` → all kept); zero-median-group keeps only trading members; single-stock group
-  kept-and-flagged.
-- `grouping_health` — correct per-group counts/medians/flag reasons, total group count, and the
-  default-bucket fraction (incl. a list with many unparseable IDs → high default fraction surfaced).
-- `download_batch` clean transform — fed a synthetic multi-field raw frame (no network): missing
-  drop, period index, groupby-first.
-- A **smoke run** of `main()` on the current small CSVs (network) confirms end-to-end + the
-  yfinance column-label form.
-The calibration experiment is validated by its real run, not unit tests.
+Part A functions are unit-tested **torch-free and network-free** (tests ship with the PR). Carried
+over (unchanged): `load_tickers`, `make_batches`, `clean_batch`, `download_all` (stub `download_fn`,
+incl. the duplicate-column dedup). Changed/new:
+- `avg_dollar_volume` — windowed mean of Close×Volume, NaN→0 (kept as info).
+- `active_fraction` — fraction of recent periods with Volume > 0; NaN and zero count as not-traded.
+- `activity_filter` — an active name (traded most weeks) kept; an inactive name (mostly
+  zero/NaN volume) dropped; the detail frame has `[avg_dollar_volume, active_fraction, kept]`.
+- `activity_health` — `n_excluded` and `zero_volume_fraction` correct (incl. an all-zero-volume
+  stock surfaced).
+Removed: the obsolete `market_key`, `liquidity_filter` (relative/group), and `grouping_health` tests.
+A **smoke run** of `main()` on the small CSVs (network) confirms end-to-end.
 
 ## Conventions
 
 Part A is a **functional pipeline change → pushed as a PR** (per push-scope), tests included.
-Part B and this spec/plan stay **local**. The calibration run (3,918-ticker download) runs in the
-background; results in the gitignored `experiments/results/liquidity_calibration/`.
+Part B and this spec/plan stay **local**. PR-1 is currently built+merged on local main with the
+*old* relative-median filter; this revision amends it before the (still-pending) clean push, so the
+PR carries the activity version. Calibration results in the gitignored
+`experiments/results/liquidity_calibration/`.
