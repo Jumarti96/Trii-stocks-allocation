@@ -19,3 +19,17 @@ def test_load_tickers_hygiene(tmp_path):
     f2.write_text("US1912161007\n")
     tickers = di.load_tickers(str(tmp_path / "*.csv"))
     assert set(tickers) == {"AAPL", "MSFT", "US1912161007"}   # BOM/space stripped, nan/blank/dup gone
+
+
+def test_make_batches():
+    assert di.make_batches([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+    assert di.make_batches([], 2) == []
+
+
+def test_market_key():
+    assert di.market_key("US1912161007") == "US"     # ISIN: 12 chars, country prefix
+    assert di.market_key("KYG4672G1064") == "KY"
+    assert di.market_key("DE0008404005") == "DE"
+    assert di.market_key("ECOPETROL.CL") == "CL"      # ticker exchange suffix
+    assert di.market_key("AAPL") == "OTHER"           # plain ticker -> catch-all bucket
+    assert di.market_key(" us1912161007 ") == "US"    # trimmed + upper

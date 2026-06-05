@@ -32,3 +32,24 @@ def load_tickers(csv_glob):
             if t and t.lower() != "nan":
                 out.add(t)
     return sorted(out)
+
+
+def make_batches(tickers, batch_size):
+    """Split a ticker list into consecutive batches of at most batch_size."""
+    return [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+
+
+def market_key(identifier):
+    """Currency-group key: ISIN country prefix, else ticker exchange suffix, else 'OTHER'.
+
+    ISIN = 12 chars (2-letter country code + 10 alphanumerics). The 'OTHER' catch-all holds plain
+    tickers and anything that fits no pattern; grouping_health reports its share so a list that does
+    not fit the patterns is visible. NOTE: an ISIN prefix is issuer domicile, a strong-but-imperfect
+    proxy for trading currency.
+    """
+    s = str(identifier).strip().upper()
+    if len(s) == 12 and s[:2].isalpha() and s[2:].isalnum():
+        return s[:2]
+    if "." in s:
+        return s.rsplit(".", 1)[-1]
+    return "OTHER"
