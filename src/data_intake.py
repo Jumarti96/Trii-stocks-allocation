@@ -149,6 +149,30 @@ def avg_dollar_volume(close, volume, window):
     return dv.iloc[-window:].mean(axis=0)
 
 
+def active_fraction(volume, window):
+    """Per ticker, the fraction of the last `window` periods with real (Volume > 0) trading.
+
+    NaN volume counts as not-traded (NaN > 0 is False). Returns a Series in [0, 1] -- a currency-free,
+    unitless activity measure (no grouping, no magnitude).
+    """
+    return (volume.iloc[-window:] > 0).mean(axis=0)
+
+
+def activity_filter(close, volume, window, min_active_fraction):
+    """Keep stocks that trade in at least `min_active_fraction` of the last `window` periods.
+
+    Returns a per-ticker DataFrame [avg_dollar_volume (informational), active_fraction, kept].
+    """
+    adv = avg_dollar_volume(close, volume, window)
+    af = active_fraction(volume, window)
+    detail = pd.DataFrame({
+        "avg_dollar_volume": adv,
+        "active_fraction": af,
+        "kept": af >= min_active_fraction,
+    })
+    return detail
+
+
 def liquidity_filter(close, volume, window, pct_of_median, min_group_size, market_key_fn=market_key):
     """Per-ticker keep/drop by relative dollar-volume within market groups.
 

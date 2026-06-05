@@ -154,3 +154,28 @@ def test_grouping_health_reports_default_fraction_and_flags():
     assert health["other_fraction"] == pytest.approx(2 / 7)
     assert "OTHER" in health["flagged_groups"]      # OTHER has size 2 -> flagged
     assert health["groups"].loc["US", "count"] == 5
+
+
+def test_active_fraction_counts_traded_periods():
+    close, volume = _frames({
+        "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),     # traded every period -> 1.0
+        "HALF": ([10, 10, 10, 10], [5, 0, 5, 0]),     # 2 of 4 -> 0.5
+        "DEAD": ([10, 10, 10, 10], [0, 0, 0, 0]),     # never -> 0.0
+    })
+    af = di.active_fraction(volume, window=4)
+    assert af["FULL"] == pytest.approx(1.0)
+    assert af["HALF"] == pytest.approx(0.5)
+    assert af["DEAD"] == pytest.approx(0.0)
+
+
+def test_activity_filter_keeps_active_drops_inactive():
+    close, volume = _frames({
+        "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),     # 1.0 -> kept
+        "HALF": ([10, 10, 10, 10], [5, 0, 5, 0]),     # 0.5 -> dropped at 0.9
+        "DEAD": ([10, 10, 10, 10], [0, 0, 0, 0]),     # 0.0 -> dropped
+    })
+    detail = di.activity_filter(close, volume, window=4, min_active_fraction=0.90)
+    assert detail.loc["FULL", "kept"] == True
+    assert detail.loc["HALF", "kept"] == False
+    assert detail.loc["DEAD", "kept"] == False
+    assert list(detail.columns) == ["avg_dollar_volume", "active_fraction", "kept"]
