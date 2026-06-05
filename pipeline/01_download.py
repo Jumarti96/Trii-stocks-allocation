@@ -35,6 +35,9 @@ def main():
 
     close, volume = download_all(tickers, cfg)
     print(f"Downloaded {close.shape[1]} valid tickers.")
+    if close.shape[1] < 0.80 * len(tickers):
+        print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
+              f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
     detail = liquidity_filter(
         close, volume,

@@ -114,6 +114,34 @@ def test_liquidity_filter_small_group_kept_and_flagged():
     assert detail.loc["DE0000000001", "flag"] == "small_group"
 
 
+def test_liquidity_filter_zero_median_group():
+    # group median is 0 (most members never trade); only the trading name is kept, all flagged
+    close, volume = _frames({
+        "US0000000001": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
+        "US0000000002": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
+        "US0000000003": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
+        "US0000000004": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
+        "US0000000005": ([10, 10, 10, 10], [5, 5, 5, 5]),   # adv 50 -> the only one kept
+    })
+    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
+    assert detail.loc["US0000000005", "kept"] == True
+    assert detail.loc["US0000000001", "kept"] == False
+    assert (detail["flag"] == "zero_median").all()
+
+
+def test_download_all_dedups_duplicate_output_columns():
+    idx = ["2020-01", "2020-02"]
+    def stub_download_fn(batch):
+        # both batches resolve to the same output symbol 'DUP' (ISIN alias / dual listing)
+        c = pd.DataFrame({"DUP": [1.0, 2.0]}, index=idx)
+        v = pd.DataFrame({"DUP": [10.0, 20.0]}, index=idx)
+        return c, v
+    cfg = {"batch_size": 1, "download_workers": 2}
+    close, volume = di.download_all(["A", "B"], cfg, download_fn=stub_download_fn)
+    assert list(close.columns) == ["DUP"]          # duplicate collapsed, no crash
+    assert list(volume.columns) == ["DUP"]
+
+
 def test_grouping_health_reports_default_fraction_and_flags():
     detail = pd.DataFrame({
         "avg_dollar_volume": [1000, 1000, 1000, 1000, 1000, 10, 5],

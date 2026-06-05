@@ -9,8 +9,10 @@ orchestrator and the experiment/test suite can import these functions directly.
 See docs/superpowers/specs/2026-06-05-step1-scaling-liquidity-filter-design.md.
 """
 
+import datetime
 import glob as _glob
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore")
 
@@ -51,7 +53,9 @@ def market_key(identifier):
     if len(s) == 12 and s[:2].isalpha() and s[2:].isalnum():
         return s[:2]
     if "." in s:
-        return s.rsplit(".", 1)[-1]
+        suffix = s.rsplit(".", 1)[-1]
+        if suffix:
+            return suffix
     return "OTHER"
 
 
@@ -77,10 +81,6 @@ def clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15):
     return close, volume
 
 
-import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
 def download_batch(batch, cfg):
     """Download one batch's Close+Volume from yfinance and clean it. Returns (close, volume) or None.
 
@@ -104,7 +104,9 @@ def download_batch(batch, cfg):
                 volume_raw = raw[["Volume"]].rename(columns={"Volume": batch[0]})
             return clean_batch(close_raw, volume_raw, cfg["period_freq"])
         except Exception as e:  # noqa: BLE001 - batch-level resilience at scale
-            if attempt == 2:
+            if attempt == 1:
+                print(f"  batch retry ({len(batch)} tickers): {e}")
+            else:
                 print(f"  batch failed ({len(batch)} tickers): {e}")
                 return None
 
@@ -129,7 +131,16 @@ def download_all(tickers, cfg, download_fn=None):
                 volumes.append(v)
     if not closes:
         raise RuntimeError("No data downloaded across all batches.")
-    return pd.concat(closes, axis=1), pd.concat(volumes, axis=1)
+    close = pd.concat(closes, axis=1)
+    volume = pd.concat(volumes, axis=1)
+    # Guard against yfinance resolving two input identifiers to the same output symbol
+    # (dual listings / ISIN aliases) -> duplicate columns crash the scalar per-ticker logic.
+    duped = close.columns[close.columns.duplicated(keep=False)]
+    if len(duped):
+        print(f"  WARNING: dropped duplicate output columns (kept first): {sorted(set(duped))}")
+        close = close.loc[:, ~close.columns.duplicated(keep="first")]
+        volume = volume.loc[:, ~volume.columns.duplicated(keep="first")]
+    return close, volume
 
 
 def avg_dollar_volume(close, volume, window):

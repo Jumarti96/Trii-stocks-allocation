@@ -10,7 +10,7 @@ days_of_data: 3650            # Historical window to download (days)
 # Step 1 download + liquidity filter
 batch_size: 500                 # tickers per download batch
 download_workers: 3             # parallel batch workers
-download_timeout: 10            # per-batch yfinance timeout (s)
+download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
 liquidity_window: 52            # periods for avg dollar-volume (weekly -> ~1yr)
 liquidity_pct_of_median: 0.10   # keep >= 10% of market-group median (set from calibration)
 liquidity_min_group_size: 5     # groups smaller than this are kept-and-flagged
