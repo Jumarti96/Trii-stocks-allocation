@@ -1,95 +1,70 @@
 """
-Step 1 - Download and Preprocess Stock Data
+Step 1 - Download and Preprocess Stock Data (parallel batches + activity filter)
 
-Downloads historical prices from yfinance, removes tickers with >15% missing
-data, forward-fills gaps, computes returns, and trims to the analysis window.
+Downloads Close+Volume for every ticker/ISIN in stock_tickers/*.csv in parallel batches, prunes the
+universe early by an activity filter (keep stocks that trade in >= liquidity_min_active_fraction of
+recent periods) plus the bad-data drop, and writes the PRUNED prices/returns.
 
 Outputs (data/):
-    01_prices.csv   - adjusted close prices, string date index
-    01_returns.csv  - period returns, string date index
+    01_prices.csv     - adjusted close prices for the kept (active) universe
+    01_returns.csv    - period returns for the kept universe
+    01_liquidity.csv  - per kept ticker: avg_dollar_volume (info), active_fraction, kept (audit)
 """
 
-import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import glob
-import datetime
 import warnings
-warnings.filterwarnings('ignore')
-
-import numpy as np
-import pandas as pd
-import yfinance as yf
+warnings.filterwarnings("ignore")
 
 from config import load_config, PATHS, BASE_DIR
-
-
-def combine_duplicate_rows(df):
-    """Keep first non-null value when yfinance returns duplicate rows for the latest period."""
-    def first_non_null(series):
-        non_null = series.dropna()
-        return non_null.iloc[0] if len(non_null) > 0 else np.nan
-    return df.groupby(df.index).agg(first_non_null)
+from data_intake import load_tickers, download_all, activity_filter, activity_health
 
 
 def main():
     cfg = load_config()
+    t0 = time.time()
+    print("\n=== Step 1: Download (parallel batches) + activity filter ===")
 
-    print("\n=== Step 1: Downloading stock data ===")
+    tickers = load_tickers(os.path.join(BASE_DIR, "stock_tickers", "*.csv"))
+    print(f"Loaded {len(tickers)} unique tickers.")
 
-    csv_files   = glob.glob(os.path.join(BASE_DIR, 'stock_tickers', '*.csv'))
-    ticker_list = list({
-        ticker
-        for csv_file in csv_files
-        for ticker in pd.read_csv(csv_file, header=None)[0].tolist()
-    })
-    print(f"Loaded {len(ticker_list)} unique tickers from {len(csv_files)} CSV file(s).")
+    close, volume = download_all(tickers, cfg)
+    print(f"Downloaded {close.shape[1]} valid tickers.")
+    if close.shape[1] < 0.80 * len(tickers):
+        print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
+              f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
-    end_date   = datetime.date.today()
-    start_date = end_date - datetime.timedelta(days=cfg['days_of_data'])
+    detail = activity_filter(
+        close, volume,
+        window=cfg["liquidity_window"],
+        min_active_fraction=cfg["liquidity_min_active_fraction"],
+    )
+    health = activity_health(detail)
+    print(f"Activity filter: kept {health['n_kept']}/{health['n_total']} "
+          f"(excluded {health['n_excluded']}; zero-volume {health['zero_volume_fraction']:.0%})")
+    if health["zero_volume_fraction"] > 0.25:
+        print("  WARNING: many stocks have no Volume at all -> likely a Volume data-source problem.")
 
-    stocks_raw = yf.download(
-        ticker_list,
-        interval=cfg['interval'],
-        start=start_date,
-        end=end_date,
-        auto_adjust=True
-    )['Close']
-    if isinstance(stocks_raw, pd.Series):
-        stocks_raw = stocks_raw.to_frame()
-    stocks_raw.index = stocks_raw.index.to_period(freq=cfg['period_freq'])
+    kept = detail.index[detail["kept"]]
+    print(f"Kept after activity filter: {len(kept)} / {close.shape[1]}")
 
-    stocks = combine_duplicate_rows(stocks_raw).sort_index()
+    close_kept = close[kept]
+    rets = close_kept.pct_change().iloc[1:]
 
-    # Drop tickers with more than 15% missing data, then forward-fill remaining gaps
-    stocks_not_missing = stocks.columns[stocks.isna().sum() < stocks.shape[0] * 0.15]
-    stocks = stocks[stocks_not_missing].ffill().bfill()
+    os.makedirs(os.path.dirname(PATHS["01_prices"]), exist_ok=True)
+    close_kept.to_csv(PATHS["01_prices"])
+    rets.to_csv(PATHS["01_returns"])
+    detail.loc[kept].to_csv(os.path.join(os.path.dirname(PATHS["01_prices"]), "01_liquidity.csv"))
 
-    rets = stocks.pct_change().iloc[1:]
-
-    # Trim to the configured analysis window
-    analysis_end   = str(datetime.date.today())
-    analysis_start = str(datetime.date.today() - datetime.timedelta(days=cfg['days_of_data']))
-    rets   = rets.loc[analysis_start:analysis_end]
-    stocks = stocks.loc[analysis_start:analysis_end]
-
-    # Convert PeriodIndex to end-of-period date strings before writing.
-    # Weekly periods come as "yyyy-mm-dd/yyyy-mm-dd"; monthly as "yyyy-mm".
-    # str.split('/').str[-1] handles both forms.
-    stocks.index = stocks.index.astype('str').str.split('/').str[-1]
-    rets.index   = rets.index.astype('str').str.split('/').str[-1]
-
-    os.makedirs(os.path.dirname(PATHS['01_prices']), exist_ok=True)
-    stocks.to_csv(PATHS['01_prices'])
-    rets.to_csv(PATHS['01_returns'])
-
-    print(f"Prices  shape: {stocks.shape}")
+    print(f"Prices  shape: {close_kept.shape}")
     print(f"Returns shape: {rets.shape}")
-    print(f"Saved: {PATHS['01_prices']}")
-    print(f"       {PATHS['01_returns']}")
+    print(f"  Step 1 completed in {time.time() - t0:.1f}s")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
