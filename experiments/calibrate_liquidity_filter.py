@@ -26,25 +26,20 @@ warnings.filterwarnings("ignore")
 import pandas as pd
 
 from config import load_config
-from data_intake import load_tickers, download_all, liquidity_filter, grouping_health
+from data_intake import load_tickers, download_all, activity_filter, activity_health
 
 
-def sweep_thresholds(close, volume, window, grid, min_group_size):
-    """For each pct_of_median in grid, count survivors (total and per market group).
+def sweep_thresholds(close, volume, window, grid):
+    """For each min_active_fraction in grid, count how many stocks survive the activity filter.
 
-    Returns a DataFrame indexed by threshold with a 'kept_total' column plus one column per market
-    group ('kept_<group>').
+    Returns a DataFrame indexed by min_active_fraction with a 'kept_total' column.
     """
     rows = {}
-    for pct in grid:
-        detail = liquidity_filter(close, volume, window, pct, min_group_size)
-        kept = detail[detail["kept"]]
-        row = {"kept_total": int(len(kept))}
-        for g, sub in kept.groupby("market_group"):
-            row[f"kept_{g}"] = int(len(sub))
-        rows[pct] = row
-    table = pd.DataFrame.from_dict(rows, orient="index").fillna(0).astype(int)
-    table.index.name = "pct_of_median"
+    for maf in grid:
+        detail = activity_filter(close, volume, window, maf)
+        rows[maf] = {"kept_total": int(detail["kept"].sum())}
+    table = pd.DataFrame.from_dict(rows, orient="index")
+    table.index.name = "min_active_fraction"
     return table
 
 
@@ -53,7 +48,7 @@ def build_arg_parser():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sources", type=str, required=True,
                         help="Comma-separated ticker CSV paths to analyse together")
-    parser.add_argument("--grid", type=str, default="0,0.01,0.05,0.1,0.25,0.5,1.0")
+    parser.add_argument("--grid", type=str, default="0,0.5,0.7,0.8,0.9,0.95,1.0")
     parser.add_argument("--list-names", action="store_true",
                         help="Also dump kept/excluded ticker names (for small sources)")
     parser.add_argument("--outdir", type=str,
@@ -73,24 +68,22 @@ def main():
     close, volume = download_all(tickers, cfg)
     print(f"Downloaded {close.shape[1]} valid tickers.")
 
-    table = sweep_thresholds(close, volume, cfg["liquidity_window"], grid,
-                             cfg["liquidity_min_group_size"])
+    table = sweep_thresholds(close, volume, cfg["liquidity_window"], grid)
     tag = "_".join(os.path.splitext(os.path.basename(s))[0] for s in sources)[:60]
     table.to_csv(os.path.join(args.outdir, f"survival_{tag}.csv"))
 
-    detail = liquidity_filter(close, volume, cfg["liquidity_window"],
-                              cfg["liquidity_pct_of_median"], cfg["liquidity_min_group_size"])
-    health = grouping_health(detail)
-    health["groups"].to_csv(os.path.join(args.outdir, f"grouping_{tag}.csv"))
+    detail = activity_filter(close, volume, cfg["liquidity_window"],
+                             cfg["liquidity_min_active_fraction"])
+    health = activity_health(detail)
 
-    print("\nSurvival vs threshold:")
+    print("\nSurvival vs min_active_fraction:")
     print(table.to_string())
-    print(f"\nGrouping: {health['n_groups']} groups | OTHER {health['other_fraction']:.0%} | "
-          f"flagged: {health['flagged_groups']}")
+    print(f"\nActivity: kept {health['n_kept']}/{health['n_total']} | "
+          f"zero-volume {health['zero_volume_fraction']:.0%}")
 
     if args.list_names:
         names_path = os.path.join(args.outdir, f"names_{tag}.csv")
-        detail.sort_values("avg_dollar_volume", ascending=False).to_csv(names_path)
+        detail.sort_values("active_fraction").to_csv(names_path)
         print(f"Wrote kept/excluded names: {names_path}")
 
 

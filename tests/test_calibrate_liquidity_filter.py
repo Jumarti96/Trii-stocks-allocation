@@ -13,17 +13,11 @@ import calibrate_liquidity_filter as clf
 
 
 def test_sweep_thresholds_counts_survivors():
-    idx = ["p1", "p2", "p3", "p4"]
-    close = pd.DataFrame({
-        "US0000000001": [10, 10, 10, 10], "US0000000002": [10, 10, 10, 10],
-        "US0000000003": [10, 10, 10, 10], "US0000000004": [10, 10, 10, 10],
-        "US0000000005": [10, 10, 10, 10],
-    }, index=idx)
-    volume = pd.DataFrame({
-        "US0000000001": [100, 100, 100, 100], "US0000000002": [100, 100, 100, 100],
-        "US0000000003": [100, 100, 100, 100], "US0000000004": [100, 100, 100, 100],
-        "US0000000005": [1, 1, 1, 1],          # tiny -> dropped at high thresholds
-    }, index=idx)
-    table = clf.sweep_thresholds(close, volume, window=4, grid=[0.0, 0.5], min_group_size=5)
-    assert table.loc[0.0, "kept_total"] == 5
-    assert table.loc[0.5, "kept_total"] == 4      # the tiny name drops at 50% of median
+    idx = ["p1", "p2", "p3", "p4", "p5"]
+    close = pd.DataFrame({"A": [10] * 5, "B": [10] * 5}, index=idx)
+    volume = pd.DataFrame({"A": [1, 1, 1, 1, 1],    # active 100%
+                           "B": [1, 1, 1, 0, 0]},   # active 60%
+                          index=idx)
+    table = clf.sweep_thresholds(close, volume, window=5, grid=[0.5, 0.9])
+    assert table.loc[0.5, "kept_total"] == 2     # both >= 50%
+    assert table.loc[0.9, "kept_total"] == 1     # only A >= 90%
