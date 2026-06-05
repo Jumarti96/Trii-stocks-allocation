@@ -53,3 +53,25 @@ def market_key(identifier):
     if "." in s:
         return s.rsplit(".", 1)[-1]
     return "OTHER"
+
+
+def clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15):
+    """Clean a batch's Close + Volume frames: period index, drop >missing_frac-missing Close
+    tickers, ffill/bfill Close, align Volume to the kept names, string period-end index.
+
+    Pure (no network). Returns (close, volume) over the same kept columns and string index.
+    """
+    close = close_raw.copy()
+    volume = volume_raw.copy()
+    close.index = close.index.to_period(freq=period_freq)
+    volume.index = volume.index.to_period(freq=period_freq)
+    close = close.groupby(level=0).first().sort_index()
+    volume = volume.groupby(level=0).first().sort_index()
+
+    keep = close.columns[close.isna().sum() < close.shape[0] * missing_frac]
+    close = close[keep].ffill().bfill()
+    volume = volume.reindex(columns=keep)
+
+    close.index = close.index.astype("str").str.split("/").str[-1]
+    volume.index = volume.index.astype("str").str.split("/").str[-1]
+    return close, volume

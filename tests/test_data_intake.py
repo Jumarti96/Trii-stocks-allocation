@@ -33,3 +33,19 @@ def test_market_key():
     assert di.market_key("ECOPETROL.CL") == "CL"      # ticker exchange suffix
     assert di.market_key("AAPL") == "OTHER"           # plain ticker -> catch-all bucket
     assert di.market_key(" us1912161007 ") == "US"    # trimmed + upper
+
+
+def test_clean_batch_drops_missing_and_aligns_volume():
+    idx = pd.date_range("2020-01-05", periods=6, freq="W")
+    close = pd.DataFrame({
+        "A": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        "B": [20.0, np.nan, np.nan, 26.0, 28.0, 30.0],   # 2/6 ~33% missing -> dropped
+    }, index=idx)
+    volume = pd.DataFrame({
+        "A": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+        "B": [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
+    }, index=idx)
+    c, v = di.clean_batch(close, volume, period_freq="W", missing_frac=0.15)
+    assert list(c.columns) == ["A"]          # B dropped for missing
+    assert list(v.columns) == ["A"]          # volume aligned to kept names
+    assert isinstance(c.index[0], str)        # period-end string index
