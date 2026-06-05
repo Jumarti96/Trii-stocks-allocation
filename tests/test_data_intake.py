@@ -179,3 +179,17 @@ def test_activity_filter_keeps_active_drops_inactive():
     assert detail.loc["HALF", "kept"] == False
     assert detail.loc["DEAD", "kept"] == False
     assert list(detail.columns) == ["avg_dollar_volume", "active_fraction", "kept"]
+
+
+def test_activity_health_counts_and_zero_volume_fraction():
+    close, volume = _frames({
+        "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),     # kept
+        "HALF": ([10, 10, 10, 10], [5, 0, 5, 0]),     # dropped (not zero-volume though)
+        "DEAD": ([10, 10, 10, 10], [0, 0, 0, 0]),     # dropped, zero-volume
+    })
+    detail = di.activity_filter(close, volume, window=4, min_active_fraction=0.90)
+    health = di.activity_health(detail)
+    assert health["n_total"] == 3
+    assert health["n_kept"] == 1
+    assert health["n_excluded"] == 2
+    assert health["zero_volume_fraction"] == pytest.approx(1 / 3)   # only DEAD has af==0

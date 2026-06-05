@@ -173,6 +173,23 @@ def activity_filter(close, volume, window, min_active_fraction):
     return detail
 
 
+def activity_health(detail):
+    """Summarise the activity filter: counts plus the share of stocks that never trade.
+
+    zero_volume_fraction (active_fraction == 0) is the data-source alarm: if it is high, Volume is
+    probably missing from the feed rather than the stocks being genuinely inactive.
+    """
+    n_total = len(detail)
+    n_kept = int(detail["kept"].sum())
+    zero_volume_fraction = float((detail["active_fraction"] == 0).mean()) if n_total else 0.0
+    return {
+        "n_total": n_total,
+        "n_kept": n_kept,
+        "n_excluded": n_total - n_kept,
+        "zero_volume_fraction": zero_volume_fraction,
+    }
+
+
 def liquidity_filter(close, volume, window, pct_of_median, min_group_size, market_key_fn=market_key):
     """Per-ticker keep/drop by relative dollar-volume within market groups.
 
