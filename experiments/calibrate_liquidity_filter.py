@@ -1,7 +1,7 @@
 """
-Calibrate the liquidity filter: download a ticker source once, then sweep the pct_of_median
-threshold to see how many stocks survive (total + per market group), so the production
-liquidity_pct_of_median default can be chosen empirically. Also reports grouping health.
+Calibrate the activity filter: download a ticker source once, then sweep the min_active_fraction
+threshold to see how many stocks survive, so the production liquidity_min_active_fraction default can
+be chosen empirically. Reports the kept/excluded counts and the zero-volume fraction.
 
 Run:  python experiments/calibrate_liquidity_filter.py --sources stock_tickers/isins_list.csv
       python experiments/calibrate_liquidity_filter.py \

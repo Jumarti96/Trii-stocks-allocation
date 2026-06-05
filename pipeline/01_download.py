@@ -1,14 +1,14 @@
 """
-Step 1 - Download and Preprocess Stock Data (parallel batches + liquidity filter)
+Step 1 - Download and Preprocess Stock Data (parallel batches + activity filter)
 
 Downloads Close+Volume for every ticker/ISIN in stock_tickers/*.csv in parallel batches, prunes the
-universe early by a currency-robust relative-liquidity filter (avg dollar-volume vs market-group
-median, with conservative small/degenerate-group handling), and writes the PRUNED prices/returns.
+universe early by an activity filter (keep stocks that trade in >= liquidity_min_active_fraction of
+recent periods) plus the bad-data drop, and writes the PRUNED prices/returns.
 
 Outputs (data/):
-    01_prices.csv     - adjusted close prices for the kept (liquid) universe
+    01_prices.csv     - adjusted close prices for the kept (active) universe
     01_returns.csv    - period returns for the kept universe
-    01_liquidity.csv  - per kept ticker: avg dollar-volume, market group, flag (audit)
+    01_liquidity.csv  - per kept ticker: avg_dollar_volume (info), active_fraction, kept (audit)
 """
 
 import os

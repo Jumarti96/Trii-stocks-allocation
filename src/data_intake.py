@@ -1,7 +1,7 @@
 """
 Data-intake helpers for pipeline step 1: load tickers, download Close+Volume in parallel batches,
-and prune the universe by a currency-robust relative-liquidity filter (with conservative
-small/degenerate-group handling and a grouping-health diagnostic).
+and prune the universe by an activity filter (keep stocks that trade in >= min_active_fraction of
+recent periods) plus the bad-data drop. Currency-free, no grouping.
 
 Lives in src/ (importable) so pipeline/01_download.py (digit-prefixed, not importable) stays a thin
 orchestrator and the experiment/test suite can import these functions directly.
