@@ -130,3 +130,40 @@ def download_all(tickers, cfg, download_fn=None):
     if not closes:
         raise RuntimeError("No data downloaded across all batches.")
     return pd.concat(closes, axis=1), pd.concat(volumes, axis=1)
+
+
+def avg_dollar_volume(close, volume, window):
+    """Mean of (Close * Volume) over the last `window` periods, per ticker. NaN treated as 0."""
+    dv = (close * volume).fillna(0.0)
+    return dv.iloc[-window:].mean(axis=0)
+
+
+def liquidity_filter(close, volume, window, pct_of_median, min_group_size, market_key_fn=market_key):
+    """Per-ticker keep/drop by relative dollar-volume within market groups.
+
+    For each market group: size < min_group_size -> keep all (flag 'small_group', unreliable
+    median); median <= 0 -> keep only members with adv > 0 (flag 'zero_median'); else keep members
+    >= pct_of_median * group_median. Returns a DataFrame indexed by ticker with columns
+    [avg_dollar_volume, market_group, kept, flag].
+    """
+    adv = avg_dollar_volume(close, volume, window)
+    groups = pd.Series({t: market_key_fn(t) for t in adv.index})
+    rows = {}
+    for g in groups.unique():
+        members = adv[groups[groups == g].index]
+        if len(members) < min_group_size:
+            for t in members.index:
+                rows[t] = (members[t], g, True, "small_group")
+        else:
+            med = float(members.median())
+            if med <= 0:
+                for t in members.index:
+                    rows[t] = (members[t], g, bool(members[t] > 0), "zero_median")
+            else:
+                thresh = pct_of_median * med
+                for t in members.index:
+                    rows[t] = (members[t], g, bool(members[t] >= thresh), "")
+    detail = pd.DataFrame.from_dict(
+        rows, orient="index", columns=["avg_dollar_volume", "market_group", "kept", "flag"]
+    )
+    return detail.loc[adv.index]

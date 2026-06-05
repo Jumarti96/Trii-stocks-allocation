@@ -70,3 +70,45 @@ def test_download_all_raises_if_all_fail():
     cfg = {"batch_size": 1, "download_workers": 2}
     with pytest.raises(RuntimeError):
         di.download_all(["A"], cfg, download_fn=lambda batch: None)
+
+
+def _frames(cols_values):
+    """Build aligned close/volume frames from {name: (close_list, vol_list)}."""
+    idx = ["p1", "p2", "p3", "p4"]
+    close = pd.DataFrame({k: v[0] for k, v in cols_values.items()}, index=idx)
+    volume = pd.DataFrame({k: v[1] for k, v in cols_values.items()}, index=idx)
+    return close, volume
+
+
+def test_avg_dollar_volume():
+    close, volume = _frames({"A": ([10, 10, 10, 10], [5, 5, 5, 5])})
+    adv = di.avg_dollar_volume(close, volume, window=2)
+    assert adv["A"] == pytest.approx(50.0)          # 10*5 averaged over last 2 periods
+
+
+def test_liquidity_filter_relative_within_group():
+    # group US: big median; one tiny name below 10% of median -> dropped. group CO: separate.
+    close, volume = _frames({
+        "US0000000001": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
+        "US0000000002": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
+        "US0000000003": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
+        "US0000000004": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
+        "US0000000005": ([10, 10, 10, 10], [1, 1, 1, 1]),           # adv 10 -> 1% of median -> drop
+        "CO0000000001": ([5, 5, 5, 5], [40, 40, 40, 40]),           # adv 200
+        "CO0000000002": ([5, 5, 5, 5], [40, 40, 40, 40]),
+        "CO0000000003": ([5, 5, 5, 5], [40, 40, 40, 40]),
+        "CO0000000004": ([5, 5, 5, 5], [40, 40, 40, 40]),
+        "CO0000000005": ([5, 5, 5, 5], [40, 40, 40, 40]),
+    })
+    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
+    assert detail.loc["US0000000005", "kept"] == False
+    assert detail.loc["US0000000001", "kept"] == True
+    assert detail.loc["CO0000000001", "kept"] == True       # CO group all equal -> all kept
+    assert detail.loc["US0000000005", "market_group"] == "US"
+
+
+def test_liquidity_filter_small_group_kept_and_flagged():
+    close, volume = _frames({"DE0000000001": ([10, 10, 10, 10], [1, 1, 1, 1])})  # group size 1 < 5
+    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
+    assert detail.loc["DE0000000001", "kept"] == True
+    assert detail.loc["DE0000000001", "flag"] == "small_group"
