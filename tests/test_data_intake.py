@@ -26,14 +26,6 @@ def test_make_batches():
     assert di.make_batches([], 2) == []
 
 
-def test_market_key():
-    assert di.market_key("US1912161007") == "US"     # ISIN: 12 chars, country prefix
-    assert di.market_key("KYG4672G1064") == "KY"
-    assert di.market_key("DE0008404005") == "DE"
-    assert di.market_key("ECOPETROL.CL") == "CL"      # ticker exchange suffix
-    assert di.market_key("AAPL") == "OTHER"           # plain ticker -> catch-all bucket
-    assert di.market_key(" us1912161007 ") == "US"    # trimmed + upper
-
 
 def test_clean_batch_drops_missing_and_aligns_volume():
     idx = pd.date_range("2020-01-05", periods=6, freq="W")
@@ -86,48 +78,6 @@ def test_avg_dollar_volume():
     assert adv["A"] == pytest.approx(50.0)          # 10*5 averaged over last 2 periods
 
 
-def test_liquidity_filter_relative_within_group():
-    # group US: big median; one tiny name below 10% of median -> dropped. group CO: separate.
-    close, volume = _frames({
-        "US0000000001": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
-        "US0000000002": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
-        "US0000000003": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
-        "US0000000004": ([10, 10, 10, 10], [100, 100, 100, 100]),   # adv 1000
-        "US0000000005": ([10, 10, 10, 10], [1, 1, 1, 1]),           # adv 10 -> 1% of median -> drop
-        "CO0000000001": ([5, 5, 5, 5], [40, 40, 40, 40]),           # adv 200
-        "CO0000000002": ([5, 5, 5, 5], [40, 40, 40, 40]),
-        "CO0000000003": ([5, 5, 5, 5], [40, 40, 40, 40]),
-        "CO0000000004": ([5, 5, 5, 5], [40, 40, 40, 40]),
-        "CO0000000005": ([5, 5, 5, 5], [40, 40, 40, 40]),
-    })
-    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
-    assert detail.loc["US0000000005", "kept"] == False
-    assert detail.loc["US0000000001", "kept"] == True
-    assert detail.loc["CO0000000001", "kept"] == True       # CO group all equal -> all kept
-    assert detail.loc["US0000000005", "market_group"] == "US"
-
-
-def test_liquidity_filter_small_group_kept_and_flagged():
-    close, volume = _frames({"DE0000000001": ([10, 10, 10, 10], [1, 1, 1, 1])})  # group size 1 < 5
-    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
-    assert detail.loc["DE0000000001", "kept"] == True
-    assert detail.loc["DE0000000001", "flag"] == "small_group"
-
-
-def test_liquidity_filter_zero_median_group():
-    # group median is 0 (most members never trade); only the trading name is kept, all flagged
-    close, volume = _frames({
-        "US0000000001": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
-        "US0000000002": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
-        "US0000000003": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
-        "US0000000004": ([10, 10, 10, 10], [0, 0, 0, 0]),   # adv 0
-        "US0000000005": ([10, 10, 10, 10], [5, 5, 5, 5]),   # adv 50 -> the only one kept
-    })
-    detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
-    assert detail.loc["US0000000005", "kept"] == True
-    assert detail.loc["US0000000001", "kept"] == False
-    assert (detail["flag"] == "zero_median").all()
-
 
 def test_download_all_dedups_duplicate_output_columns():
     idx = ["2020-01", "2020-02"]
@@ -141,19 +91,6 @@ def test_download_all_dedups_duplicate_output_columns():
     assert list(close.columns) == ["DUP"]          # duplicate collapsed, no crash
     assert list(volume.columns) == ["DUP"]
 
-
-def test_grouping_health_reports_default_fraction_and_flags():
-    detail = pd.DataFrame({
-        "avg_dollar_volume": [1000, 1000, 1000, 1000, 1000, 10, 5],
-        "market_group": ["US", "US", "US", "US", "US", "OTHER", "OTHER"],
-        "kept": [True, True, True, True, True, True, True],
-        "flag": ["", "", "", "", "", "small_group", "small_group"],
-    }, index=[f"t{i}" for i in range(7)])
-    health = di.grouping_health(detail)
-    assert health["n_groups"] == 2
-    assert health["other_fraction"] == pytest.approx(2 / 7)
-    assert "OTHER" in health["flagged_groups"]      # OTHER has size 2 -> flagged
-    assert health["groups"].loc["US", "count"] == 5
 
 
 def test_active_fraction_counts_traded_periods():

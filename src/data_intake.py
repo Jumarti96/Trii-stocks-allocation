@@ -41,23 +41,6 @@ def make_batches(tickers, batch_size):
     return [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
 
 
-def market_key(identifier):
-    """Currency-group key: ISIN country prefix, else ticker exchange suffix, else 'OTHER'.
-
-    ISIN = 12 chars (2-letter country code + 10 alphanumerics). The 'OTHER' catch-all holds plain
-    tickers and anything that fits no pattern; grouping_health reports its share so a list that does
-    not fit the patterns is visible. NOTE: an ISIN prefix is issuer domicile, a strong-but-imperfect
-    proxy for trading currency.
-    """
-    s = str(identifier).strip().upper()
-    if len(s) == 12 and s[:2].isalpha() and s[2:].isalnum():
-        return s[:2]
-    if "." in s:
-        suffix = s.rsplit(".", 1)[-1]
-        if suffix:
-            return suffix
-    return "OTHER"
-
 
 def clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15):
     """Clean a batch's Close + Volume frames: period index, drop >missing_frac-missing Close
@@ -190,55 +173,3 @@ def activity_health(detail):
     }
 
 
-def liquidity_filter(close, volume, window, pct_of_median, min_group_size, market_key_fn=market_key):
-    """Per-ticker keep/drop by relative dollar-volume within market groups.
-
-    For each market group: size < min_group_size -> keep all (flag 'small_group', unreliable
-    median); median <= 0 -> keep only members with adv > 0 (flag 'zero_median'); else keep members
-    >= pct_of_median * group_median. Returns a DataFrame indexed by ticker with columns
-    [avg_dollar_volume, market_group, kept, flag].
-    """
-    adv = avg_dollar_volume(close, volume, window)
-    groups = pd.Series({t: market_key_fn(t) for t in adv.index})
-    rows = {}
-    for g in groups.unique():
-        members = adv[groups[groups == g].index]
-        if len(members) < min_group_size:
-            for t in members.index:
-                rows[t] = (members[t], g, True, "small_group")
-        else:
-            med = float(members.median())
-            if med <= 0:
-                for t in members.index:
-                    rows[t] = (members[t], g, bool(members[t] > 0), "zero_median")
-            else:
-                thresh = pct_of_median * med
-                for t in members.index:
-                    rows[t] = (members[t], g, bool(members[t] >= thresh), "")
-    detail = pd.DataFrame.from_dict(
-        rows, orient="index", columns=["avg_dollar_volume", "market_group", "kept", "flag"]
-    )
-    return detail.loc[adv.index]
-
-
-def grouping_health(detail):
-    """Summarise market grouping from a liquidity_filter detail frame.
-
-    Returns {'n_groups', 'other_fraction' (share of tickers in the OTHER catch-all),
-    'flagged_groups' (groups containing any small_group/zero_median flag), 'groups' (per-group
-    DataFrame: count, median adv, n_kept)}.
-    """
-    g = detail.groupby("market_group")
-    groups = pd.DataFrame({
-        "count": g.size(),
-        "median": g["avg_dollar_volume"].median(),
-        "n_kept": g["kept"].sum(),
-    })
-    flagged = sorted(detail.loc[detail["flag"] != "", "market_group"].unique().tolist())
-    other_fraction = float((detail["market_group"] == "OTHER").mean())
-    return {
-        "n_groups": int(len(groups)),
-        "other_fraction": other_fraction,
-        "flagged_groups": flagged,
-        "groups": groups,
-    }
