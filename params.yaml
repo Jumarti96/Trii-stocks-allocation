@@ -7,6 +7,15 @@ periods_per_year: 54          # 52 for weekly data, 12 for monthly
 interval: "1wk"              # "1wk" for weekly, "1mo" for monthly
 days_of_data: 3650            # Historical window to download (days)
 
+# Step 1 download + liquidity filter
+batch_size: 500                 # tickers per download batch
+download_workers: 3             # parallel batch workers
+download_timeout: 10            # per-batch yfinance timeout (s)
+liquidity_window: 52            # periods for avg dollar-volume (weekly -> ~1yr)
+liquidity_pct_of_median: 0.10   # keep >= 10% of market-group median (set from calibration)
+liquidity_min_group_size: 5     # groups smaller than this are kept-and-flagged
+liquidity_topn: null            # optional cap (future knob; null = off)
+
 # Technical signal filtering (Step 2)
 ma_terms: 10                  # Moving-average window (periods)
 signal_min_count: 3           # Minimum positive signals (out of 4) to keep a stock
