@@ -112,3 +112,17 @@ def test_liquidity_filter_small_group_kept_and_flagged():
     detail = di.liquidity_filter(close, volume, window=4, pct_of_median=0.10, min_group_size=5)
     assert detail.loc["DE0000000001", "kept"] == True
     assert detail.loc["DE0000000001", "flag"] == "small_group"
+
+
+def test_grouping_health_reports_default_fraction_and_flags():
+    detail = pd.DataFrame({
+        "avg_dollar_volume": [1000, 1000, 1000, 1000, 1000, 10, 5],
+        "market_group": ["US", "US", "US", "US", "US", "OTHER", "OTHER"],
+        "kept": [True, True, True, True, True, True, True],
+        "flag": ["", "", "", "", "", "small_group", "small_group"],
+    }, index=[f"t{i}" for i in range(7)])
+    health = di.grouping_health(detail)
+    assert health["n_groups"] == 2
+    assert health["other_fraction"] == pytest.approx(2 / 7)
+    assert "OTHER" in health["flagged_groups"]      # OTHER has size 2 -> flagged
+    assert health["groups"].loc["US", "count"] == 5

@@ -167,3 +167,26 @@ def liquidity_filter(close, volume, window, pct_of_median, min_group_size, marke
         rows, orient="index", columns=["avg_dollar_volume", "market_group", "kept", "flag"]
     )
     return detail.loc[adv.index]
+
+
+def grouping_health(detail):
+    """Summarise market grouping from a liquidity_filter detail frame.
+
+    Returns {'n_groups', 'other_fraction' (share of tickers in the OTHER catch-all),
+    'flagged_groups' (groups containing any small_group/zero_median flag), 'groups' (per-group
+    DataFrame: count, median adv, n_kept)}.
+    """
+    g = detail.groupby("market_group")
+    groups = pd.DataFrame({
+        "count": g.size(),
+        "median": g["avg_dollar_volume"].median(),
+        "n_kept": g["kept"].sum(),
+    })
+    flagged = sorted(detail.loc[detail["flag"] != "", "market_group"].unique().tolist())
+    other_fraction = float((detail["market_group"] == "OTHER").mean())
+    return {
+        "n_groups": int(len(groups)),
+        "other_fraction": other_fraction,
+        "flagged_groups": flagged,
+        "groups": groups,
+    }
