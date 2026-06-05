@@ -92,7 +92,6 @@ def test_download_all_dedups_duplicate_output_columns():
     assert list(volume.columns) == ["DUP"]
 
 
-
 def test_active_fraction_counts_traded_periods():
     close, volume = _frames({
         "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),     # traded every period -> 1.0
@@ -103,6 +102,27 @@ def test_active_fraction_counts_traded_periods():
     assert af["FULL"] == pytest.approx(1.0)
     assert af["HALF"] == pytest.approx(0.5)
     assert af["DEAD"] == pytest.approx(0.0)
+
+
+def test_active_fraction_window_longer_than_data():
+    # window > number of rows -> use all available rows, still a valid fraction (newly listed name)
+    close, volume = _frames({
+        "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),
+        "HALF": ([10, 10, 10, 10], [5, 0, 5, 0]),
+    })
+    af = di.active_fraction(volume, window=100)
+    assert af["FULL"] == pytest.approx(1.0)
+    assert af["HALF"] == pytest.approx(0.5)
+
+
+def test_active_fraction_all_nan_volume_is_inactive():
+    # yfinance can return all-NaN Volume for some instruments -> active_fraction 0 -> excluded
+    close, volume = _frames({"NOVOL": ([10, 10, 10, 10], [np.nan, np.nan, np.nan, np.nan])})
+    af = di.active_fraction(volume, window=4)
+    assert af["NOVOL"] == pytest.approx(0.0)
+    detail = di.activity_filter(close, volume, window=4, min_active_fraction=0.90)
+    assert detail.loc["NOVOL", "kept"] == False
+    assert di.activity_health(detail)["zero_volume_fraction"] == pytest.approx(1.0)
 
 
 def test_activity_filter_keeps_active_drops_inactive():

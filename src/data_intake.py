@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore")
 
-import numpy as np
 import pandas as pd
 
 
@@ -39,7 +38,6 @@ def load_tickers(csv_glob):
 def make_batches(tickers, batch_size):
     """Split a ticker list into consecutive batches of at most batch_size."""
     return [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
-
 
 
 def clean_batch(close_raw, volume_raw, period_freq, missing_frac=0.15):

@@ -28,7 +28,7 @@ from data_intake import load_tickers, download_all, activity_filter, activity_he
 def main():
     cfg = load_config()
     t0 = time.time()
-    print("\n=== Step 1: Download (parallel batches) + liquidity filter ===")
+    print("\n=== Step 1: Download (parallel batches) + activity filter ===")
 
     tickers = load_tickers(os.path.join(BASE_DIR, "stock_tickers", "*.csv"))
     print(f"Loaded {len(tickers)} unique tickers.")
