@@ -44,7 +44,7 @@ Out of scope:
   dollar-volume ≥ `pct_of_median × (median avg dollar-volume of its market group)`. No FX, no
   per-ticker currency lookups.
 - **Market group key (`market_key`):** ISIN country prefix (first 2 chars of a 12-char ISIN) →
-  e.g. `US`,`CO`,`KY`,`DE`; else ticker exchange suffix after `.`; else `US` (plain US ticker).
+  e.g. `US`,`CO`,`KY`,`DE`; else ticker exchange suffix after `.`; else `OTHER` (catch-all bucket).
   **Caveat:** the ISIN prefix is issuer *domicile*, not always trading *currency* (e.g. `KY` ISINs
   are often USD ADRs). It correlates strongly with currency in practice; the calibration
   experiment validates that the grouping behaves sensibly before the default is trusted.
@@ -83,10 +83,10 @@ import them; refactoring is in-scope since the file is heavily changed).
   - **median == 0** (degenerate): keep only members with avg dollar-volume > 0, mark flagged.
   - **otherwise**: keep members `≥ pct_of_median * group_median`.
   Returns the kept names (and the per-stock group/flag detail consumed by `grouping_health`).
-- `grouping_health(avg_dv, market_key_fn=market_key, min_group_size=...)` — returns a report:
-  per-group count + median + flag reason (small / zero-median / ok), the total group count, and the
-  fraction of tickers landing in the `default` (unparseable) bucket. Pure; drives the run-time
-  warning and the persisted audit.
+- `grouping_health(detail)` — given the `liquidity_filter` detail frame, returns a report:
+  per-group count + median + n_kept, the flagged groups (any small / zero-median member), the total
+  group count, and the fraction of tickers landing in the `OTHER` catch-all bucket. Pure; drives the
+  run-time warning and the persisted audit.
 - `main()` — `load_tickers` → `download_all` → `grouping_health` (print the diagnostic: group
   count, % in the `default` bucket, flagged groups; warn loudly if the default-bucket fraction
   exceeds a sane bound, e.g. >25%, since that signals the list doesn't fit the patterns) →
