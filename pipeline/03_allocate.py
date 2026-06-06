@@ -1,5 +1,5 @@
 """
-Step 4 - Portfolio Allocation
+Step 3 - Portfolio Allocation
 
 Dispatches on cfg['allocation_method']:
   - "parametric_michaud" (default): resampled efficiency -- draw K mu ~ N(mu_bar, s^2*Sigma/T),
@@ -12,7 +12,7 @@ for large universes. Set allocation_top_n: null to disable the cap.
 
 Reads  (data/): 01_returns.csv (for T), 02_expected_returns.csv, 02_covmat.csv
 Outputs (data/):
-    04_weights.csv - optimal weight per held stock
+    03_weights.csv - optimal weight per held stock
 """
 
 import sys
@@ -32,7 +32,7 @@ from allocation import allocate, select_top_n
 def main():
     cfg = load_config()
 
-    print("\n=== Step 4: Portfolio Allocation ===")
+    print("\n=== Step 3: Portfolio Allocation ===")
 
     returns  = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
     covmat   = pd.read_csv(PATHS['02_covmat'], index_col=0)
@@ -54,8 +54,8 @@ def main():
     print(f"\nFinal portfolio: {len(optimal)} stocks")
     print(optimal.sort_values('Weights', ascending=False).to_string())
 
-    optimal.to_csv(PATHS['04_weights'])
-    print(f"\nSaved: {PATHS['04_weights']}")
+    optimal.to_csv(PATHS['03_weights'])
+    print(f"\nSaved: {PATHS['03_weights']}")
 
 
 if __name__ == '__main__':
