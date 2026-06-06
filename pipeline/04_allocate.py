@@ -6,10 +6,11 @@ Dispatches on cfg['allocation_method']:
     raw msr per draw, average the weights, one min_weight floor (src/allocation.resampled_michaud).
   - "msr": the legacy Sharpe-max + batch-elimination loop (src/allocation.msr_eliminate).
 
-The technical filter (step 3) is the allocation gate: full-universe predictions from step 2 are
-restricted to the selected names before allocating.
+Before optimising, the full-universe mu and covmat from step 2 are pre-filtered to the
+top allocation_top_n stocks (ranked by allocation_ranking) to keep optimizer compute tractable
+for large universes. Set allocation_top_n: null to disable the cap.
 
-Reads  (data/): 01_returns.csv (for T), 02_expected_returns.csv, 02_covmat.csv, 03_selected_returns.csv
+Reads  (data/): 01_returns.csv (for T), 02_expected_returns.csv, 02_covmat.csv
 Outputs (data/):
     04_weights.csv - optimal weight per held stock
 """
@@ -25,7 +26,7 @@ warnings.filterwarnings('ignore')
 import pandas as pd
 
 from config import load_config, PATHS
-from allocation import allocate
+from allocation import allocate, select_top_n
 
 
 def main():
@@ -33,23 +34,21 @@ def main():
 
     print("\n=== Step 4: Portfolio Allocation ===")
 
-    expected_returns = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
-    covmat = pd.read_csv(PATHS['02_covmat'], index_col=0)
+    returns  = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
+    covmat   = pd.read_csv(PATHS['02_covmat'], index_col=0)
     n_periods = len(pd.read_csv(PATHS['01_returns'], index_col=0))
 
-    # Allocation gate: restrict the full-universe predictions to the step-3 selection.
-    selected = pd.read_csv(PATHS['03_selected_returns'], index_col=0, nrows=0).columns
-    selected = [s for s in selected if s in expected_returns.index and s in covmat.index]
+    top_n  = cfg.get('allocation_top_n')
+    metric = cfg.get('allocation_ranking', 'sharpe')
+    returns, covmat = select_top_n(returns, covmat, top_n, metric)
 
     method = cfg.get('allocation_method', 'parametric_michaud')
-    print(f"Method: {method} | Allocation universe: {len(selected)} selected stock(s).")
-
-    returns = expected_returns[selected]
-    covmat = covmat.loc[selected, selected]
+    print(f"Method: {method} | Universe: {len(returns)} stock(s) "
+          f"(top_n={top_n}, ranking={metric})")
 
     weights = allocate(returns, covmat, cfg, n_periods)
 
-    held = weights[weights.abs() > 1e-9]
+    held    = weights[weights.abs() > 1e-9]
     optimal = held.sort_values().to_frame('Weights')
 
     print(f"\nFinal portfolio: {len(optimal)} stocks")

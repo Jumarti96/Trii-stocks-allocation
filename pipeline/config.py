@@ -23,10 +23,6 @@ PATHS = {
     '02_covmat':           os.path.join(DATA_DIR, '02_covmat.csv'),
     '02_predictions':      os.path.join(DATA_DIR, '02_predictions.csv'),
     '02_metadata':         os.path.join(DATA_DIR, '02_metadata.json'),
-    # Step 3 outputs (technical filter / allocation gate)
-    '03_selected_returns': os.path.join(DATA_DIR, '03_selected_returns.csv'),
-    '03_selected_prices':  os.path.join(DATA_DIR, '03_selected_prices.csv'),
-    '03_signals':          os.path.join(DATA_DIR, '03_signals.csv'),
     # Step 4 outputs
     '04_weights':          os.path.join(DATA_DIR, '04_weights.csv'),
     # Step 5 output — set dynamically by load_config() from cfg['output_path']
