@@ -9,10 +9,10 @@ Use --resume to skip steps whose output files are already present.
 
 Usage:
   python orchestrator.py                       # Run all steps
-  python orchestrator.py --steps 3 4          # Run only steps 3 and 4
-  python orchestrator.py --from 3             # Run from step 3 to the end
+  python orchestrator.py --steps 4            # Run only step 4
+  python orchestrator.py --from 2             # Run from step 2 to the end
   python orchestrator.py --resume             # Skip steps that are already cached
-  python orchestrator.py --steps 3 --resume   # Run step 3 only if not cached
+  python orchestrator.py --steps 4 --resume   # Run step 4 only if not cached
   python orchestrator.py --list               # Show step status and exit
 """
 
@@ -37,11 +37,6 @@ STEPS = {
         'script':  '02_predict.py',
         'name':    'Transformer Prediction and Covariance',
         'outputs': [PATHS['02_expected_returns'], PATHS['02_covmat'], PATHS['02_metadata']],
-    },
-    3: {
-        'script':  '03_filter.py',
-        'name':    'Technical Signal Filtering',
-        'outputs': [PATHS['03_selected_returns'], PATHS['03_selected_prices']],
     },
     4: {
         'script':  '04_allocate.py',
