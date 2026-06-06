@@ -163,3 +163,58 @@ class TestAllocateDispatcher:
         cfg = dict(CFG); cfg["allocation_method"] = "bogus"
         with pytest.raises(ValueError):
             allocate(_mu5([0.1] * 5), cov5, cfg, n_periods=100)
+
+
+from allocation import select_top_n
+
+
+def _universe5():
+    """5-stock universe with known Sharpe and return rankings.
+
+    mu:    A=0.10  B=0.05  C=0.20  D=0.08  E=0.15
+    vol:   A=0.30  B=0.10  C=0.50  D=0.10  E=0.20
+    Sharpe:  0.333   0.500   0.400   0.800   0.750
+    Sharpe rank: D > E > B > C > A  -> top-3: {D, E, B}
+    Return rank: C > E > A > D > B  -> top-3: {C, E, A}
+    """
+    tickers = ["A", "B", "C", "D", "E"]
+    mu = pd.Series({"A": 0.10, "B": 0.05, "C": 0.20, "D": 0.08, "E": 0.15})
+    vols = {"A": 0.30, "B": 0.10, "C": 0.50, "D": 0.10, "E": 0.20}
+    cov_arr = np.diag([vols[t] ** 2 for t in tickers])
+    cov = pd.DataFrame(cov_arr, index=tickers, columns=tickers)
+    return mu, cov
+
+
+class TestSelectTopN:
+    def test_sharpe_ranking_selects_correct_names(self):
+        mu, cov = _universe5()
+        mu_out, cov_out = select_top_n(mu, cov, n=3, metric="sharpe")
+        assert set(mu_out.index) == {"D", "E", "B"}
+
+    def test_return_ranking_selects_correct_names(self):
+        mu, cov = _universe5()
+        mu_out, cov_out = select_top_n(mu, cov, n=3, metric="return")
+        assert set(mu_out.index) == {"C", "E", "A"}
+
+    def test_null_n_returns_full_universe(self):
+        mu, cov = _universe5()
+        mu_out, cov_out = select_top_n(mu, cov, n=None, metric="sharpe")
+        assert list(mu_out.index) == list(mu.index)
+        assert cov_out.shape == cov.shape
+
+    def test_n_exceeds_universe_returns_full(self):
+        mu, cov = _universe5()
+        mu_out, cov_out = select_top_n(mu, cov, n=1000, metric="sharpe")
+        assert list(mu_out.index) == list(mu.index)
+        assert cov_out.shape == cov.shape
+
+    def test_covmat_index_matches_mu_index(self):
+        mu, cov = _universe5()
+        mu_out, cov_out = select_top_n(mu, cov, n=3, metric="sharpe")
+        assert list(cov_out.index) == list(mu_out.index)
+        assert list(cov_out.columns) == list(mu_out.index)
+
+    def test_unknown_metric_raises(self):
+        mu, cov = _universe5()
+        with pytest.raises(ValueError):
+            select_top_n(mu, cov, n=3, metric="bogus")

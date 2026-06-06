@@ -128,6 +128,28 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     return apply_consensus_floor(raw.mean(axis=0), min_w)
 
 
+def select_top_n(mu, covmat, n, metric="sharpe"):
+    """Pre-select the top-n candidates by metric before optimization.
+
+    metric='sharpe': rank by mu / sqrt(diag(covmat))  (default)
+    metric='return': rank by mu only
+    n=None or n >= len(mu): no-op, returns full universe unchanged.
+    """
+    if n is None or n >= len(mu):
+        return mu, covmat
+    if metric == "sharpe":
+        vol = pd.Series(
+            np.sqrt(np.diag(covmat.values)), index=mu.index
+        ).clip(lower=1e-8)
+        score = mu / vol
+    elif metric == "return":
+        score = mu
+    else:
+        raise ValueError(f"unknown allocation_ranking: {metric!r}")
+    top = score.nlargest(n).index
+    return mu[top], covmat.loc[top, top]
+
+
 def allocate(returns, covmat, cfg, n_periods):
     """Dispatch to the configured allocation method (cfg['allocation_method'])."""
     method = cfg.get("allocation_method", "parametric_michaud")
