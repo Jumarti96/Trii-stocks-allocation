@@ -15,16 +15,14 @@ liquidity_window: 52            # periods for active_fraction / avg dollar-volum
 liquidity_min_active_fraction: 0.90   # keep stocks trading in >= 90% of recent periods (set from calibration)
 liquidity_topn: null            # optional compute-bound cap (future knob; null = off)
 
-# Technical signal filtering (Step 2)
-ma_terms: 10                  # Moving-average window (periods)
-signal_min_count: 3           # Minimum positive signals (out of 4) to keep a stock
-
 # Transformer model (Step 3)
 periods_to_forecast: 4        # Periods ahead to predict
 n_transformer_runs: 100        # Independent training runs; predictions are averaged
 time_window: null             # Input sequence length; null means derived as periods_per_year
 
 # Portfolio optimisation (Step 4)
+allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)
+allocation_ranking: sharpe   # "sharpe" (mu/sigma) | "return" (mu only)
 allocation_method: parametric_michaud   # "parametric_michaud" | "msr"
 michaud_spread: 4.0                      # s; draw scale on Sigma/T (4.0 = "s4", deployed: most consistent across regimes, lower vol/turnover)
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
