@@ -90,3 +90,28 @@ def test_train_and_predict_composes_from_train_runs():
         pd.DataFrame(runs.mean(axis=0), columns=rets.columns), rets
     )
     pd.testing.assert_frame_equal(out_direct, out_compose)
+
+
+from transformer_model import _normalise, _denormalise
+import pytest
+
+
+def test_normalise_roundtrip():
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(rng.normal(0, 1, (100, 4)), columns=list("ABCD"))
+    df["A"] *= 10    # high-vol stock
+    df["D"] *= 0.1   # low-vol stock
+    data, mu, sigma = _normalise(df)
+    recovered = data * sigma + mu
+    np.testing.assert_allclose(recovered, df.values, atol=1e-10)
+
+
+def test_normalise_zero_std_column():
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame({
+        "A": rng.normal(0, 0.02, 50),
+        "B": np.zeros(50),  # dormant stock — zero historical variance
+    })
+    data, mu, sigma = _normalise(df)
+    assert sigma[1] == pytest.approx(1e-8)           # clipped, not zero
+    np.testing.assert_array_equal(data[:, 1], 0.0)   # all zeros → normalised to 0
