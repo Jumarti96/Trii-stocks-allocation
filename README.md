@@ -186,6 +186,26 @@ Notebook 2 and the pipeline both offer two methods for estimating the covariance
 
 ---
 
+## Transformer Model
+
+The Transformer Neural Network (step 2) is multivariate: at each timestep it receives the full
+return cross-section — all stocks simultaneously — projected to a shared d_model=128 embedding
+via self-attention. This lets the model learn cross-stock relationships directly from the return
+data without requiring explicit industry tags or factor labels, similar in spirit to a Vector
+Autoregressive (VAR) model but with a nonlinear attention-based architecture.
+
+Each rebalance, the model is trained from scratch `n_transformer_runs` times with different
+random initialisations. The final forecast is the average across all runs, dampening
+initialisation noise.
+
+| Technique | Detail |
+|---|---|
+| **Per-stock Z-score normalisation** | Each stock's return series is normalised to zero mean, unit variance before training and denormalised after prediction. This prevents high-volatility stocks from dominating the MSE loss — especially important in large universes where return scale disparity between micro-caps and large-caps can reach 10:1. |
+| **LR warmup + cosine decay** | Learning rate ramps from 10% → 100% of `lr=1e-4` over the first 5 epochs (warmup), then decays via cosine annealing to near-zero over the remaining 45. This avoids large noisy gradient steps during random initialisation and allows fine-tuning toward the end of training. |
+| **Winsorisation** | Predictions are clipped to the 1st–99th percentile of historical returns before being passed to the optimiser, preventing extreme outlier forecasts from distorting the allocation. |
+
+---
+
 ## Project Structure
 
 ```
