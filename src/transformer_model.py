@@ -193,6 +193,27 @@ def winsorize_to_history(preds_df, returns_df):
     return preds_df.clip(lower=lower_w, upper=upper_w)
 
 
+def _normalise(returns_df):
+    """Per-stock Z-score normalisation. Returns (data, mu, sigma).
+
+    sigma is clipped to 1e-8 to prevent division by zero for dormant stocks.
+    Both mu and sigma are 1-D ndarrays of shape (n_stocks,).
+    """
+    mu = returns_df.mean().values
+    sigma = returns_df.std().clip(lower=1e-8).values
+    data = (returns_df.values - mu) / sigma
+    return data, mu, sigma
+
+
+def _denormalise(preds_arr, mu, sigma):
+    """Reverse per-stock Z-score normalisation.
+
+    preds_arr: ndarray of shape (periods_to_forecast, n_stocks) in normalised space.
+    Returns an ndarray of the same shape in original return scale.
+    """
+    return preds_arr * sigma + mu
+
+
 def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
     """Train n_runs Transformers on returns_df and return averaged, winsorised forecasts.
 
