@@ -1,9 +1,7 @@
 # Stock Portfolio Allocation: Portfolio Optimization Project
 
 ## Overview
-This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data, forecasts future returns using a Transformer Neural Network (trained on the **full** stock universe), estimates a covariance matrix using Ledoit-Wolf shrinkage, filters stocks using technical signals, and finds the allocation that maximizes the Sharpe ratio over the filtered set. The full capital budget is deployed into the selected equity positions.
-
-The Transformer (step 2) and the technical filter (step 3) are **independent branches off the downloaded data** (step 1): prediction trains on every ticker, while the filter acts purely as an **allocation gate** — it decides which stocks are eligible to hold, and step 4 restricts the optimization to those names.
+This project implements a portfolio optimization pipeline for stocks available on the Trii platform. It downloads historical price data for a universe of ~2,700+ ISINs, applies an **activity filter** to remove genuinely inactive names (step 1), forecasts future returns using a Transformer Neural Network trained on the **full active universe** (step 2), then pre-selects the top-N candidates by Sharpe proxy and finds the allocation that maximises the Sharpe ratio over that set (step 3). The full capital budget is deployed into the selected equity positions.
 
 ---
 
@@ -48,15 +46,19 @@ periods_per_year: 54          # 52 for weekly, 12 for monthly
 interval: "1wk"              # "1wk" or "1mo"
 days_of_data: 3650
 
-# Technical signal filtering
-ma_terms: 10
-signal_min_count: 3           # Minimum positive signals (out of 4) to keep a stock
+# Activity filter (Step 1)
+min_active_fraction: 0.90     # Keep stocks traded in >= 90% of recent weeks
 
 # Transformer model
 periods_to_forecast: 4
 n_transformer_runs: 50        # Increase for stability; decrease to run faster
 
-# Portfolio optimisation
+# Portfolio optimisation (Step 3)
+allocation_top_n: 150         # Candidates fed to the optimizer; null = no cap
+allocation_ranking: sharpe    # "sharpe" (mu/sigma) | "return" (mu only)
+allocation_method: parametric_michaud
+michaud_spread: 4.0
+michaud_mc_draws: 1000
 rf_rate: 0.11                 # 10-Y Colombian bond yield
 max_weight: 0.15
 min_weight: 0.05
@@ -70,6 +72,7 @@ The most commonly adjusted parameters before each run are:
 - `investment_cop` — update to your current available capital
 - `rf_rate` — update to the current 10-year Colombian bond yield
 - `n_transformer_runs` — increase for more stable predictions; decrease to run faster
+- `allocation_top_n` — increase if you have more compute budget (optimizer scales O(N³))
 
 ---
 
@@ -81,13 +84,13 @@ There are three ways to run the pipeline.
 
 ### Option 1 — Modular Pipeline via Orchestrator (recommended)
 
-The pipeline is broken into five sequential steps, each producing intermediate files in `data/` that can be inspected between runs.
+The pipeline is broken into four sequential steps, each producing intermediate files in `data/` that can be inspected between runs.
 
 ```bash
 python orchestrator.py
 ```
 
-The orchestrator is **resumable by default**: if a step's output files already exist it skips that step. This means you can re-run without repeating the GPU-intensive Transformer step.
+The orchestrator is **resumable**: use `--resume` to skip steps whose output files already exist, so you can re-run step 3 without repeating the GPU-intensive Transformer step.
 
 **Useful flags:**
 
@@ -95,15 +98,15 @@ The orchestrator is **resumable by default**: if a step's output files already e
 |---|---|
 | `python orchestrator.py` | Run all steps unconditionally |
 | `python orchestrator.py --resume` | Run all steps, skip any already cached |
-| `python orchestrator.py --steps 4 5` | Run only steps 4 and 5 |
-| `python orchestrator.py --from 3` | Run from step 3 to the end |
+| `python orchestrator.py --steps 3` | Run only step 3 |
+| `python orchestrator.py --from 2` | Run from step 2 to the end |
 | `python orchestrator.py --steps 3 --resume` | Run step 3 only if not cached |
 | `python orchestrator.py --list` | Show step status and exit |
 
 **Running a single step standalone** (without the orchestrator):
 
 ```bash
-python pipeline/04_allocate.py
+python pipeline/03_allocate.py
 ```
 
 Each script in `pipeline/` is fully self-contained and can be run independently, as long as its input files in `data/` already exist.
@@ -114,11 +117,10 @@ Each script in `pipeline/` is fully self-contained and can be run independently,
 |---|---|---|
 | 1 | `01_download.py` | `01_prices.csv`, `01_returns.csv` |
 | 2 | `02_predict.py` | `02_expected_returns.csv`, `02_covmat.csv`, `02_predictions.csv`, `02_metadata.json` |
-| 3 | `03_filter.py` | `03_selected_returns.csv`, `03_selected_prices.csv`, `03_signals.csv` |
-| 4 | `04_allocate.py` | `04_weights.csv` |
-| 5 | `05_report.py` | `results/allocation_output.csv` |
+| 3 | `03_allocate.py` | `03_weights.csv` |
+| 4 | `04_report.py` | `results/allocation_output.csv` |
 
-Steps 2 (predict) and 3 (filter) both depend only on step 1 and are independent of each other; step 4 consumes both. The Transformer model itself lives in `src/transformer_model.py`.
+The Transformer model itself lives in `src/transformer_model.py`.
 
 ---
 
@@ -146,14 +148,14 @@ Run the four notebooks in order:
 
 | # | Notebook | What it does |
 |---|---|---|
-| 1 | `1. Trii Catalog Stock Pre-selection.ipynb` | Downloads prices, computes SMA/EMA/MACD/PRC signals, filters stocks |
+| 1 | `1. Trii Catalog Stock Pre-selection.ipynb` | Downloads prices, applies signal-based pre-selection |
 | 2 | `2. Future returns and Covariance matrix estimation.ipynb` | Trains Transformer NN to forecast returns; estimates covariance |
 | 3 | `3. Trii Catalog Sharpe-Ratio Maximizing Allocation.ipynb` | Maximises Sharpe ratio with weight constraints; plots efficient frontier |
 | 4 | `4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb` | Backtests CPPI strategy; runs Brownian motion simulation |
 
 Each notebook loads core parameters from `params.yaml` automatically. Intermediate CSV files are saved to `temp_references/` and picked up by the next notebook.
 
-> **Note:** `pipeline/` is the source of truth. The notebooks are kept for exploration and charts and may lag the pipeline. In particular, the Transformer notebook (2) now trains on the **full universe** to match the pipeline; other notebook details may differ from the current `pipeline/` scripts.
+> **Note:** `pipeline/` is the source of truth. The notebooks are kept for exploration and charts and may lag the pipeline in methodology.
 
 ---
 
@@ -194,11 +196,10 @@ Trii Stocks allocation/
 │
 ├── pipeline/                   # One script per pipeline step
 │   ├── config.py               # Shared config loader (reads params.yaml)
-│   ├── 01_download.py          # Download & preprocess stock data
+│   ├── 01_download.py          # Download & preprocess stock data + activity filter
 │   ├── 02_predict.py           # Transformer prediction + covariance (full universe)
-│   ├── 03_filter.py            # Technical signal filtering (allocation gate)
-│   ├── 04_allocate.py          # Sharpe ratio optimisation (over the filtered set)
-│   └── 05_report.py            # Final report assembly
+│   ├── 03_allocate.py          # Top-N pre-selection + Sharpe ratio optimisation
+│   └── 04_report.py            # Final report assembly
 │
 ├── data/                       # Intermediate files between pipeline steps
 │   ├── 01_prices.csv
@@ -207,10 +208,7 @@ Trii Stocks allocation/
 │   ├── 02_covmat.csv
 │   ├── 02_predictions.csv
 │   ├── 02_metadata.json
-│   ├── 03_selected_returns.csv
-│   ├── 03_selected_prices.csv
-│   ├── 03_signals.csv
-│   └── 04_weights.csv
+│   └── 03_weights.csv
 │
 ├── results/
 │   └── allocation_output.csv   # Final allocation output
