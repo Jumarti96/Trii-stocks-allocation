@@ -123,3 +123,28 @@ def test_train_runs_output_in_original_scale():
     rets = _tiny_rets(1)
     runs = train_runs(rets, _tiny_cfg(), n_runs=2, verbose=False)
     assert runs.std() < 0.5  # normalised scale would be ~1.0; original is ~0.02
+
+
+def test_scheduler_lr_profile():
+    # Verify warmup (rising) then cosine decay (falling to near-zero).
+    # Uses a 2-parameter toy model — no training data needed.
+    toy_model = torch.nn.Linear(2, 2)
+    optimizer = torch.optim.Adam(toy_model.parameters(), lr=1e-4)
+    n_epochs, n_warmup = 50, 5
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, end_factor=1.0, total_iters=n_warmup
+    )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_epochs - n_warmup, eta_min=1e-6
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[n_warmup]
+    )
+    lrs = []
+    for _ in range(n_epochs):
+        lrs.append(optimizer.param_groups[0]["lr"])
+        scheduler.step()
+
+    assert lrs[0] < lrs[4]    # warmup: lr rising toward epoch 5
+    assert lrs[5] > lrs[49]   # cosine: lr falling after warmup
+    assert lrs[49] < 1e-5     # near zero at the end
