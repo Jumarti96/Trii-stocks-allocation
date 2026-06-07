@@ -163,12 +163,10 @@ def test_write_outputs_topn_overlap_lw_columns():
 
 
 from nstudy_transformer_runs_4k import run_one_iteration, run_timing_calibration
-import tempfile
 
 
 def test_run_one_iteration_output_structure():
     """Smoke-test run_one_iteration with tiny data (5 stocks, 4 runs, checkpoints=[4])."""
-    import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
     from config import load_config
 
@@ -206,7 +204,6 @@ def test_run_one_iteration_output_structure():
 
 
 def test_run_timing_calibration_returns_positive():
-    import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
     from config import load_config
 
@@ -228,7 +225,6 @@ def test_run_timing_calibration_returns_positive():
 
 def test_main_smoke(tmp_path, monkeypatch):
     """Run main() end-to-end with tiny overrides — must write all output files."""
-    import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
     from config import load_config
     import nstudy_transformer_runs_4k as mod
