@@ -115,3 +115,11 @@ def test_normalise_zero_std_column():
     data, mu, sigma = _normalise(df)
     assert sigma[1] == pytest.approx(1e-8)           # clipped, not zero
     np.testing.assert_array_equal(data[:, 1], 0.0)   # all zeros → normalised to 0
+
+
+def test_train_runs_output_in_original_scale():
+    # _tiny_rets produces data with std ≈ 0.02 (weekly return scale).
+    # If train_runs forgets to denormalise, outputs would have std ≈ 1.0.
+    rets = _tiny_rets(1)
+    runs = train_runs(rets, _tiny_cfg(), n_runs=2, verbose=False)
+    assert runs.std() < 0.5  # normalised scale would be ~1.0; original is ~0.02

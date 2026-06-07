@@ -127,7 +127,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     if n_runs is None:
         n_runs = cfg['n_transformer_runs']
 
-    data = returns_df.values
+    data, mu, sigma = _normalise(returns_df)
     X, Y = create_dataset(data, time_window)
     if verbose:
         print(f"Training shapes - X: {X.shape}, Y: {Y.shape}")
@@ -181,7 +181,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
                 run_preds.append(pred[0].cpu().numpy())
                 pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
 
-        all_preds_runs.append(np.array(run_preds))
+        all_preds_runs.append(_denormalise(np.array(run_preds), mu, sigma))
 
     return np.array(all_preds_runs)
 
