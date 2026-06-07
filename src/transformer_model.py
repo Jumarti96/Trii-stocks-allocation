@@ -150,8 +150,20 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
         dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
+        n_epochs  = 50
+        n_warmup  = 5
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=n_warmup
+        )
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=n_epochs - n_warmup, eta_min=1e-6
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[n_warmup]
+        )
+
         model.train()
-        for _ in range(50):
+        for _ in range(n_epochs):
             for batch_x, batch_y in dataloader:
                 optimizer.zero_grad()
                 if use_amp:
@@ -166,6 +178,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
                     loss   = criterion(output, batch_y)
                     loss.backward()
                     optimizer.step()
+            scheduler.step()
 
         model.eval()
         run_preds   = []
