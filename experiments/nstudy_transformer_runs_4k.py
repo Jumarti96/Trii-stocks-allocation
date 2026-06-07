@@ -23,7 +23,7 @@ from config import load_config, PATHS
 
 CHECKPOINTS = [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300]
 THRESHOLDS  = [150, 300, 500]
-N_ITERS     = 30
+N_ITERS     = 10
 N_RUNS      = 300
 _EPS        = 1e-10
 
@@ -230,7 +230,7 @@ def main():
 
     print("\nTiming calibration (10 runs)...")
     per_run, est_total = run_timing_calibration(rets_df, cfg, n_cal=10)
-    print(f"  {per_run:.1f}s/run  →  estimated total: {est_total/3600:.1f}h "
+    print(f"  {per_run:.1f}s/run  ->  estimated total: {est_total/3600:.1f}h "
           f"({est_total:.0f}s)")
     print("Proceed? [y/N] ", end="", flush=True)
     if input().strip().lower() != "y":
