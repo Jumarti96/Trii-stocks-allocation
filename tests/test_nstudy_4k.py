@@ -4,7 +4,14 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experiments"))
-from nstudy_transformer_runs_4k import compute_mu_per_run, compute_topn_overlap
+from nstudy_transformer_runs_4k import (
+    compute_mu_per_run,
+    compute_topn_overlap,
+    compute_cov_across_iters,
+    compute_cov_sf_across_iters,
+    aggregate_topn_overlaps,
+    aggregate_sigma_decay,
+)
 
 
 def test_compute_mu_per_run_shape():
@@ -52,3 +59,49 @@ def test_compute_topn_overlap_partial():
     scores_ref = np.array([3.0, 0.0, 2.0, 1.0])  # top-2: indices 0,2
     # intersection size = 1 (index 0), k=2 → 0.5
     assert compute_topn_overlap(scores_n, scores_ref, k=2) == pytest.approx(0.5)
+
+
+def test_compute_cov_across_iters_identical_iters():
+    # If every iteration has the same mu, cross-iter std = 0 → CoV = 0 everywhere
+    snapshots = [{25: np.array([0.05, 0.10, -0.03])} for _ in range(5)]
+    result = compute_cov_across_iters(snapshots, checkpoints=[25])
+    median, p25, p75 = result[25]
+    assert median == pytest.approx(0.0, abs=1e-8)
+
+
+def test_compute_cov_across_iters_known_values():
+    # Two iterations: stock 0 has mu=[1.0, 3.0] → mean=2, std(ddof=1)=√2≈1.414, CoV≈0.707
+    #                 stock 1 has mu=[2.0, 2.0] → mean=2, std(ddof=1)=0, CoV=0
+    snap0 = {10: np.array([1.0, 2.0])}
+    snap1 = {10: np.array([3.0, 2.0])}
+    result = compute_cov_across_iters([snap0, snap1], checkpoints=[10])
+    median, _, _ = result[10]
+    # median of [0.707, 0.0] ≈ 0.354
+    assert median == pytest.approx(np.sqrt(2) / 2 / 2, abs=1e-6)
+
+
+def test_compute_cov_sf_shape():
+    # Same structure as compute_cov_across_iters — just check output shape/keys
+    sf_snaps = [{25: np.ones(4), 50: np.ones(4) * 0.5} for _ in range(3)]
+    result = compute_cov_sf_across_iters(sf_snaps, checkpoints=[25, 50])
+    assert set(result.keys()) == {25, 50}
+    for n in [25, 50]:
+        median, p25, p75 = result[n]
+        assert p25 <= median <= p75
+
+
+def test_aggregate_topn_overlaps_mean_std():
+    # Two iterations, one checkpoint, one threshold
+    topn = [{25: {150: 0.6}} , {25: {150: 0.8}}]
+    result = aggregate_topn_overlaps(topn, checkpoints=[25], thresholds=[150])
+    mean, std = result[(25, 150)]
+    assert mean == pytest.approx(0.7, abs=1e-8)
+    # std(ddof=1) of [0.6, 0.8] = sqrt(((0.6-0.7)^2 + (0.8-0.7)^2)/1) ≈ 0.1414
+    assert std  == pytest.approx(np.sqrt(0.02), abs=1e-6)
+
+
+def test_aggregate_sigma_decay_mean():
+    mean_sf = [{25: 0.04, 50: 0.03}, {25: 0.06, 50: 0.03}]
+    result = aggregate_sigma_decay(mean_sf, checkpoints=[25, 50])
+    assert result[25] == pytest.approx(0.05, abs=1e-8)
+    assert result[50] == pytest.approx(0.03, abs=1e-8)

@@ -53,3 +53,63 @@ def compute_topn_overlap(scores_n, scores_ref, k):
     top_n   = set(np.argsort(scores_n)[-k:])
     top_ref = set(np.argsort(scores_ref)[-k:])
     return len(top_n & top_ref) / k
+
+
+def compute_cov_across_iters(mu_snapshots, checkpoints):
+    """Cross-iteration CoV of mu per stock, aggregated as median + p25/p75.
+
+    mu_snapshots: list of dicts — one dict per iteration, each mapping n → (n_stocks,) array
+    Returns: dict mapping n → (median_cov, p25_cov, p75_cov)
+    """
+    result = {}
+    for n in checkpoints:
+        stacked = np.stack([s[n] for s in mu_snapshots], axis=0)  # (n_iters, n_stocks)
+        stds    = stacked.std(axis=0, ddof=1)
+        means   = stacked.mean(axis=0)
+        cov     = stds / (np.abs(means) + _EPS)
+        result[n] = (float(np.median(cov)),
+                     float(np.percentile(cov, 25)),
+                     float(np.percentile(cov, 75)))
+    return result
+
+
+def compute_cov_sf_across_iters(sf_snapshots, checkpoints):
+    """Cross-iteration CoV of sigma_forecast per stock, aggregated as median + p25/p75.
+
+    sf_snapshots: list of dicts — one dict per iteration, each mapping n → (n_stocks,) array
+    Returns: dict mapping n → (median_cov, p25_cov, p75_cov)
+    """
+    result = {}
+    for n in checkpoints:
+        stacked = np.stack([s[n] for s in sf_snapshots], axis=0)
+        stds    = stacked.std(axis=0, ddof=1)
+        means   = stacked.mean(axis=0)
+        cov     = stds / (np.abs(means) + _EPS)
+        result[n] = (float(np.median(cov)),
+                     float(np.percentile(cov, 25)),
+                     float(np.percentile(cov, 75)))
+    return result
+
+
+def aggregate_topn_overlaps(topn_by_iter, checkpoints, thresholds):
+    """Aggregate per-iteration top-N overlap fractions to mean ± std.
+
+    topn_by_iter: list of dicts — one per iteration, each mapping n → {k: overlap_fraction}
+    Returns: dict mapping (n, k) → (mean, std)
+    """
+    result = {}
+    for n in checkpoints:
+        for k in thresholds:
+            vals = [d[n][k] for d in topn_by_iter]
+            result[(n, k)] = (float(np.mean(vals)),
+                              float(np.std(vals, ddof=1) if len(vals) > 1 else 0.0))
+    return result
+
+
+def aggregate_sigma_decay(mean_sf_by_iter, checkpoints):
+    """Mean sigma_forecast across iterations for each checkpoint.
+
+    mean_sf_by_iter: list of dicts — one per iteration, each mapping n → float
+    Returns: dict mapping n → float
+    """
+    return {n: float(np.mean([d[n] for d in mean_sf_by_iter])) for n in checkpoints}
