@@ -139,11 +139,15 @@ def active_fraction(volume, window):
     return (volume.iloc[-window:] > 0).mean(axis=0)
 
 
-def activity_filter(close, volume, window, min_active_fraction):
+def activity_filter(close, volume, window=None, min_active_fraction=0.85):
     """Keep stocks that trade in at least `min_active_fraction` of the last `window` periods.
 
+    window defaults to the last 10% of the time-series (min 10 periods). Pass an explicit
+    integer to override (useful in tests with small fixtures).
     Returns a per-ticker DataFrame [avg_dollar_volume (informational), active_fraction, kept].
     """
+    if window is None:
+        window = max(10, len(close) // 10)
     adv = avg_dollar_volume(close, volume, window)
     af = active_fraction(volume, window)
     detail = pd.DataFrame({
