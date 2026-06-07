@@ -130,17 +130,14 @@ A new **Transformer Model** section describing:
 
 ## Testing
 
-**Existing test that must be updated:**
+**Existing test — no change needed:**
 
 `tests/test_transformer_model.py:77` — `test_train_and_predict_composes_from_train_runs`
-currently asserts `train_and_predict(rets) == winsorize(mean(train_runs(rets)))`. After
-normalization, `train_and_predict` normalizes `rets` before calling `train_runs`, so
-calling `train_runs(rets)` directly (unnormalized) will produce different outputs and
-the test will fail. The test must be updated to reflect the new composition:
-`train_and_predict(rets) == winsorize(mean(train_runs(normalize(rets)))) * sigma + mu`.
-In practice, replace the direct equality assertion with a shape + bounds check (same
-columns, values within winsorization bounds) since exact equality through a seed is no
-longer meaningful once normalization shifts the input distribution.
+asserts `train_and_predict(rets) == winsorize(mean(train_runs(rets)))`. Because
+normalization lives *inside* `train_runs` (not in `train_and_predict`), both the
+direct call and the composed call receive the same `rets`, apply the same normalization
+stats, train under the same seed, and denormalize before returning — the equality still
+holds. No changes required.
 
 **New normalization tests — torch-free:**
 
@@ -149,13 +146,19 @@ longer meaningful once normalization shifts the input distribution.
 | `test_normalise_roundtrip` | `denormalize(normalize(x)) ≈ x` for a multi-column DataFrame with mixed scales |
 | `test_normalise_zero_std_column` | A column with constant returns normalizes to 0.0 without raising (1e-8 clip) |
 
+**New `train_runs` denormalization test — uses torch (tiny model, no real data):**
+
+| Test | What it checks |
+|---|---|
+| `test_train_runs_output_in_original_scale` | Build a small returns DataFrame where all values are in [-0.05, 0.05]; confirm `train_runs` output values are NOT all in the normalized [-5, 5] range relative to the *normalized* distribution — i.e., predictions have been multiplied back by sigma (≈ 0.02) so they fall within the historical return magnitude, not outside it. Concretely: `assert runs.std() < 1.0` (original weekly return scale, not unit-variance scale). |
+
 **New scheduler test — lightweight torch (no training data):**
 
 | Test | What it checks |
 |---|---|
 | `test_scheduler_lr_profile` | Instantiate optimizer + scheduler on a 2-parameter toy model; step 50 times; assert `lr[0] < lr[4]` (warmup rising), `lr[5] > lr[49]` (cosine decaying), `lr[49] < 1e-5` (near zero) |
 
-No full model training in new tests.
+No full training loop in new tests (tiny model, no dataset).
 
 ## Conventions
 
