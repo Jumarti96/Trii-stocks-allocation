@@ -160,3 +160,45 @@ def test_write_outputs_topn_overlap_lw_columns():
         df = pd.read_csv(os.path.join(tmp, 'topn_overlap_lw.csv'))
         assert list(df.columns) == ['n', 'k', 'overlap_mean', 'overlap_std']
         assert len(df) == 4  # 2 checkpoints × 2 thresholds
+
+
+from nstudy_transformer_runs_4k import run_one_iteration
+
+
+def test_run_one_iteration_output_structure():
+    """Smoke-test run_one_iteration with tiny data (5 stocks, 4 runs, checkpoints=[4])."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+
+    rng = np.random.default_rng(42)
+    # 60 periods × 5 stocks — enough for train_runs (time_window derived as periods_per_year=54
+    # won't fit in 60 rows; use a config override with time_window=10)
+    n_stocks, n_periods = 5, 30
+    rets_df = pd.DataFrame(
+        rng.standard_normal((n_periods, n_stocks)) * 0.01,
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+
+    cfg = load_config()
+    cfg['time_window']          = 8
+    cfg['periods_to_forecast']  = 2
+    cfg['transformer_epochs']   = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    from sklearn.covariance import LedoitWolf
+    sigma_lw = np.sqrt(np.diag(LedoitWolf().fit(rets_df.values).covariance_))
+
+    checkpoints = [2, 4]
+    thresholds  = [3]   # top-3 out of 5 stocks
+
+    result = run_one_iteration(rets_df, sigma_lw, cfg, checkpoints, thresholds, seed=0)
+
+    assert set(result.keys()) == {'mu_snapshots', 'sf_snapshots', 'topn_lw', 'topn_fv', 'mean_sf'}
+    for n in checkpoints:
+        assert result['mu_snapshots'][n].shape == (n_stocks,)
+        assert result['sf_snapshots'][n].shape == (n_stocks,)
+        assert set(result['topn_lw'][n].keys()) == {3}
+        assert set(result['topn_fv'][n].keys()) == {3}
+        assert 0.0 <= result['topn_lw'][n][3] <= 1.0
+        assert 0.0 <= result['topn_fv'][n][3] <= 1.0

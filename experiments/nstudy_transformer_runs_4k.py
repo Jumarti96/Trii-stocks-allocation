@@ -195,3 +195,55 @@ def write_outputs(metrics, out_dir):
 
     with open(os.path.join(out_dir, 'nstudy_4k_summary.txt'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
+
+
+def run_one_iteration(rets_df, sigma_lw, cfg, checkpoints, thresholds, seed):
+    """Train N_RUNS transformer models for one iteration and record per-checkpoint snapshots.
+
+    rets_df:    DataFrame (T, n_stocks) — historical returns (from data/01_returns.csv)
+    sigma_lw:   ndarray (n_stocks,)     — sqrt of LW covariance diagonal (fixed, pre-computed)
+    cfg:        dict                    — pipeline config (from load_config())
+    checkpoints: list[int]              — n values at which to snapshot metrics
+    thresholds:  list[int]              — top-N thresholds for overlap metrics
+    seed:        int                    — sets torch + numpy random state before training
+
+    Returns dict with keys:
+        mu_snapshots  — dict[n → ndarray (n_stocks,)] running mean of per-run mu
+        sf_snapshots  — dict[n → ndarray (n_stocks,)] sigma_forecast (cross-run std of mu)
+        topn_lw       — dict[n → dict[k → float]] LW-Sharpe top-N overlap vs n=max(checkpoints)
+        topn_fv       — dict[n → dict[k → float]] forecast-variance Sharpe top-N overlap
+        mean_sf       — dict[n → float] mean sigma_forecast across stocks
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    n_runs = max(checkpoints)
+    preds_3d  = train_runs(rets_df, cfg, n_runs=n_runs, verbose=False)
+    # preds_3d: (n_runs, periods_to_forecast, n_stocks)
+
+    mu_per_run = compute_mu_per_run(preds_3d)  # (n_runs, n_stocks)
+
+    # Reference: full n_runs average within this iteration
+    mu_ref = mu_per_run.mean(axis=0)
+    sf_ref = mu_per_run.std(axis=0, ddof=1) if n_runs > 1 else np.zeros(mu_per_run.shape[1])
+    sharpe_lw_ref = mu_ref / (sigma_lw + _EPS)
+    sharpe_fv_ref = mu_ref / (sf_ref   + _EPS)
+
+    out = {'mu_snapshots': {}, 'sf_snapshots': {}, 'topn_lw': {}, 'topn_fv': {}, 'mean_sf': {}}
+
+    for n in checkpoints:
+        mu_n = mu_per_run[:n].mean(axis=0)
+        sf_n = mu_per_run[:n].std(axis=0, ddof=1) if n > 1 else np.zeros(mu_per_run.shape[1])
+
+        sharpe_lw_n = mu_n / (sigma_lw + _EPS)
+        sharpe_fv_n = mu_n / (sf_n     + _EPS)
+
+        out['mu_snapshots'][n] = mu_n
+        out['sf_snapshots'][n] = sf_n
+        out['mean_sf'][n]      = float(sf_n.mean())
+        out['topn_lw'][n]      = {k: compute_topn_overlap(sharpe_lw_n, sharpe_lw_ref, k)
+                                  for k in thresholds}
+        out['topn_fv'][n]      = {k: compute_topn_overlap(sharpe_fv_n, sharpe_fv_ref, k)
+                                  for k in thresholds}
+
+    return out
