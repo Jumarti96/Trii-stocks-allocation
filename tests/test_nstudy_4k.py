@@ -162,7 +162,8 @@ def test_write_outputs_topn_overlap_lw_columns():
         assert len(df) == 4  # 2 checkpoints × 2 thresholds
 
 
-from nstudy_transformer_runs_4k import run_one_iteration
+from nstudy_transformer_runs_4k import run_one_iteration, run_timing_calibration
+import tempfile
 
 
 def test_run_one_iteration_output_structure():
@@ -202,3 +203,65 @@ def test_run_one_iteration_output_structure():
         assert set(result['topn_fv'][n].keys()) == {3}
         assert 0.0 <= result['topn_lw'][n][3] <= 1.0
         assert 0.0 <= result['topn_fv'][n][3] <= 1.0
+
+
+def test_run_timing_calibration_returns_positive():
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+
+    rng = np.random.default_rng(7)
+    rets_df = pd.DataFrame(
+        rng.standard_normal((30, 5)) * 0.01,
+        columns=[f"S{i}" for i in range(5)],
+    )
+    cfg = load_config()
+    cfg['time_window']         = 8
+    cfg['periods_to_forecast'] = 2
+    cfg['transformer_epochs']  = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    per_run, total = run_timing_calibration(rets_df, cfg, n_cal=2)
+    assert per_run > 0
+    assert total  > 0
+
+
+def test_main_smoke(tmp_path, monkeypatch):
+    """Run main() end-to-end with tiny overrides — must write all output files."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+    import nstudy_transformer_runs_4k as mod
+
+    rng = np.random.default_rng(99)
+    n_stocks, n_periods = 5, 30
+    rets_df = pd.DataFrame(
+        rng.standard_normal((n_periods, n_stocks)) * 0.01,
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+
+    cfg = load_config()
+    cfg['time_window']         = 8
+    cfg['periods_to_forecast'] = 2
+    cfg['transformer_epochs']  = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    # Patch module-level constants so main() uses tiny settings
+    monkeypatch.setattr(mod, "CHECKPOINTS", [2, 4])
+    monkeypatch.setattr(mod, "THRESHOLDS",  [3])
+    monkeypatch.setattr(mod, "N_ITERS",     2)
+    monkeypatch.setattr(mod, "N_RUNS",      4)
+    monkeypatch.setattr(mod, "_OUT_DIR",    str(tmp_path))
+    monkeypatch.setattr(mod, "_load_data",  lambda: (rets_df, cfg))
+    # Skip real timing calibration and auto-answer the prompt
+    monkeypatch.setattr(mod, "run_timing_calibration", lambda *a, **kw: (1.0, 900.0))
+    monkeypatch.setattr("builtins.input", lambda _="": "y")
+
+    mod.main()
+
+    expected = {
+        'convergence_metrics.csv', 'topn_overlap_lw.csv',
+        'sigma_forecast_decay.csv', 'cov_sigma_forecast.csv',
+        'topn_overlap_fv.csv', 'nstudy_4k_summary.txt',
+    }
+    assert expected == set(os.listdir(str(tmp_path)))

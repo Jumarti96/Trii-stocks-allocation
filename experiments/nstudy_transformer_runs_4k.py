@@ -197,6 +197,83 @@ def write_outputs(metrics, out_dir):
         f.write('\n'.join(lines) + '\n')
 
 
+_OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "results", "nstudy_4k")
+
+
+def _load_data():
+    """Load returns DataFrame and pipeline config from default PATHS."""
+    cfg    = load_config()
+    rets_df = pd.read_csv(PATHS['01_returns'], index_col=0)
+    return rets_df, cfg
+
+
+def run_timing_calibration(rets_df, cfg, n_cal=10):
+    """Train n_cal models and return (per_run_seconds, estimated_total_seconds).
+
+    estimated_total_seconds covers N_ITERS × N_RUNS model trainings.
+    """
+    t0 = time.time()
+    train_runs(rets_df, cfg, n_runs=n_cal, verbose=False)
+    per_run = (time.time() - t0) / n_cal
+    return per_run, per_run * N_ITERS * N_RUNS
+
+
+def main():
+    rets_df, cfg = _load_data()
+    n_stocks = rets_df.shape[1]
+
+    print(f"\n=== nstudy_transformer_runs_4k ===")
+    print(f"Universe: {n_stocks} stocks, {len(rets_df)} periods")
+    print(f"Plan: {N_ITERS} iterations × {N_RUNS} runs, "
+          f"checkpoints={CHECKPOINTS}, thresholds={THRESHOLDS}")
+
+    print("\nTiming calibration (10 runs)...")
+    per_run, est_total = run_timing_calibration(rets_df, cfg, n_cal=10)
+    print(f"  {per_run:.1f}s/run  →  estimated total: {est_total/3600:.1f}h "
+          f"({est_total:.0f}s)")
+    print("Proceed? [y/N] ", end="", flush=True)
+    if input().strip().lower() != "y":
+        print("Aborted.")
+        return
+
+    sigma_lw = np.sqrt(np.diag(LedoitWolf().fit(rets_df.values).covariance_))
+    seeds    = list(range(N_ITERS))
+
+    mu_snaps_all  = []
+    sf_snaps_all  = []
+    topn_lw_all   = []
+    topn_fv_all   = []
+    mean_sf_all   = []
+
+    for i, seed in enumerate(seeds):
+        print(f"\nIteration {i + 1}/{N_ITERS}  (seed={seed})")
+        res = run_one_iteration(rets_df, sigma_lw, cfg, CHECKPOINTS, THRESHOLDS, seed=seed)
+        mu_snaps_all.append(res['mu_snapshots'])
+        sf_snaps_all.append(res['sf_snapshots'])
+        topn_lw_all.append(res['topn_lw'])
+        topn_fv_all.append(res['topn_fv'])
+        mean_sf_all.append(res['mean_sf'])
+
+    print("\nAggregating...")
+    metrics = {
+        'cov_mu':      compute_cov_across_iters(mu_snaps_all,  CHECKPOINTS),
+        'topn_lw':     aggregate_topn_overlaps(topn_lw_all,    CHECKPOINTS, THRESHOLDS),
+        'sigma_decay': aggregate_sigma_decay(mean_sf_all,      CHECKPOINTS),
+        'cov_sf':      compute_cov_sf_across_iters(sf_snaps_all, CHECKPOINTS),
+        'topn_fv':     aggregate_topn_overlaps(topn_fv_all,    CHECKPOINTS, THRESHOLDS),
+        'checkpoints': CHECKPOINTS,
+        'thresholds':  THRESHOLDS,
+        'n_iters':     N_ITERS,
+        'n_runs':      N_RUNS,
+        'n_stocks':    n_stocks,
+    }
+
+    print(f"Writing results to {_OUT_DIR}")
+    write_outputs(metrics, _OUT_DIR)
+    print("Done.")
+
+
 def run_one_iteration(rets_df, sigma_lw, cfg, checkpoints, thresholds, seed):
     """Train N_RUNS transformer models for one iteration and record per-checkpoint snapshots.
 
@@ -247,3 +324,7 @@ def run_one_iteration(rets_df, sigma_lw, cfg, checkpoints, thresholds, seed):
                                   for k in thresholds}
 
     return out
+
+
+if __name__ == '__main__':
+    main()
