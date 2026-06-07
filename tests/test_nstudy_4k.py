@@ -1,6 +1,8 @@
 import os
 import sys
+import tempfile
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experiments"))
@@ -11,6 +13,7 @@ from nstudy_transformer_runs_4k import (
     compute_cov_sf_across_iters,
     aggregate_topn_overlaps,
     aggregate_sigma_decay,
+    write_outputs,
 )
 
 
@@ -105,3 +108,55 @@ def test_aggregate_sigma_decay_mean():
     result = aggregate_sigma_decay(mean_sf, checkpoints=[25, 50])
     assert result[25] == pytest.approx(0.05, abs=1e-8)
     assert result[50] == pytest.approx(0.03, abs=1e-8)
+
+
+def _make_stub_metrics():
+    checkpoints = [25, 50]
+    thresholds  = [150, 300]
+    return {
+        'cov_mu':         {25: (0.5, 0.3, 0.7), 50: (0.4, 0.2, 0.6)},
+        'topn_lw':        {(25, 150): (0.4, 0.05), (25, 300): (0.5, 0.04),
+                           (50, 150): (0.6, 0.03), (50, 300): (0.7, 0.02)},
+        'sigma_decay':    {25: 0.02, 50: 0.015},
+        'cov_sf':         {25: (0.3, 0.2, 0.4), 50: (0.25, 0.15, 0.35)},
+        'topn_fv':        {(25, 150): (0.35, 0.06), (25, 300): (0.45, 0.05),
+                           (50, 150): (0.55, 0.04), (50, 300): (0.65, 0.03)},
+        'checkpoints':    checkpoints,
+        'thresholds':     thresholds,
+        'n_iters':        2,
+        'n_runs':         50,
+        'n_stocks':       100,
+    }
+
+
+def test_write_outputs_creates_all_files():
+    metrics = _make_stub_metrics()
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(metrics, tmp)
+        expected = {
+            'convergence_metrics.csv',
+            'topn_overlap_lw.csv',
+            'sigma_forecast_decay.csv',
+            'cov_sigma_forecast.csv',
+            'topn_overlap_fv.csv',
+            'nstudy_4k_summary.txt',
+        }
+        assert expected == set(os.listdir(tmp))
+
+
+def test_write_outputs_convergence_metrics_columns():
+    metrics = _make_stub_metrics()
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(metrics, tmp)
+        df = pd.read_csv(os.path.join(tmp, 'convergence_metrics.csv'))
+        assert list(df.columns) == ['n', 'cov_mu_median', 'cov_mu_p25', 'cov_mu_p75']
+        assert len(df) == 2  # two checkpoints
+
+
+def test_write_outputs_topn_overlap_lw_columns():
+    metrics = _make_stub_metrics()
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(metrics, tmp)
+        df = pd.read_csv(os.path.join(tmp, 'topn_overlap_lw.csv'))
+        assert list(df.columns) == ['n', 'k', 'overlap_mean', 'overlap_std']
+        assert len(df) == 4  # 2 checkpoints × 2 thresholds

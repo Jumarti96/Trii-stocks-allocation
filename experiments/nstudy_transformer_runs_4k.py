@@ -113,3 +113,85 @@ def aggregate_sigma_decay(mean_sf_by_iter, checkpoints):
     Returns: dict mapping n → float
     """
     return {n: float(np.mean([d[n] for d in mean_sf_by_iter])) for n in checkpoints}
+
+
+def write_outputs(metrics, out_dir):
+    """Write all five metric CSVs and a summary text file to out_dir.
+
+    metrics keys: cov_mu, topn_lw, sigma_decay, cov_sf, topn_fv,
+                  checkpoints, thresholds, n_iters, n_runs, n_stocks
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    ckpts = metrics['checkpoints']
+    thres = metrics['thresholds']
+
+    # convergence_metrics.csv
+    pd.DataFrame([
+        {'n': n, 'cov_mu_median': v[0], 'cov_mu_p25': v[1], 'cov_mu_p75': v[2]}
+        for n, v in metrics['cov_mu'].items()
+    ]).sort_values('n').to_csv(os.path.join(out_dir, 'convergence_metrics.csv'), index=False)
+
+    # topn_overlap_lw.csv
+    pd.DataFrame([
+        {'n': n, 'k': k, 'overlap_mean': v[0], 'overlap_std': v[1]}
+        for (n, k), v in metrics['topn_lw'].items()
+    ]).sort_values(['n', 'k']).to_csv(os.path.join(out_dir, 'topn_overlap_lw.csv'), index=False)
+
+    # sigma_forecast_decay.csv
+    pd.DataFrame([
+        {'n': n, 'mean_sigma_forecast': v}
+        for n, v in metrics['sigma_decay'].items()
+    ]).sort_values('n').to_csv(os.path.join(out_dir, 'sigma_forecast_decay.csv'), index=False)
+
+    # cov_sigma_forecast.csv
+    pd.DataFrame([
+        {'n': n, 'cov_sf_median': v[0], 'cov_sf_p25': v[1], 'cov_sf_p75': v[2]}
+        for n, v in metrics['cov_sf'].items()
+    ]).sort_values('n').to_csv(os.path.join(out_dir, 'cov_sigma_forecast.csv'), index=False)
+
+    # topn_overlap_fv.csv
+    pd.DataFrame([
+        {'n': n, 'k': k, 'overlap_mean': v[0], 'overlap_std': v[1]}
+        for (n, k), v in metrics['topn_fv'].items()
+    ]).sort_values(['n', 'k']).to_csv(os.path.join(out_dir, 'topn_overlap_fv.csv'), index=False)
+
+    # nstudy_4k_summary.txt
+    lines = [
+        "n_transformer_runs convergence study — 4k-stock universe",
+        f"n_iterations={metrics['n_iters']}, n_runs_per_iter={metrics['n_runs']}, "
+        f"n_stocks={metrics['n_stocks']}",
+        "",
+        "== CoV of mu across iterations ==",
+        f"{'n':>6}  {'cov_mu_median':>14}  {'cov_mu_p25':>10}  {'cov_mu_p75':>10}",
+    ]
+    for n in ckpts:
+        med, p25, p75 = metrics['cov_mu'][n]
+        lines.append(f"{n:>6}  {med:>14.4f}  {p25:>10.4f}  {p75:>10.4f}")
+
+    lines += ["", "== Top-N overlap (LW Sharpe) ==",
+              f"{'n':>6}  {'k':>6}  {'overlap_mean':>13}  {'overlap_std':>11}"]
+    for n in ckpts:
+        for k in thres:
+            m, s = metrics['topn_lw'][(n, k)]
+            lines.append(f"{n:>6}  {k:>6}  {m:>13.4f}  {s:>11.4f}")
+
+    lines += ["", "== sigma_forecast decay ==",
+              f"{'n':>6}  {'mean_sigma_forecast':>19}"]
+    for n in ckpts:
+        lines.append(f"{n:>6}  {metrics['sigma_decay'][n]:>19.6f}")
+
+    lines += ["", "== CoV of sigma_forecast across iterations ==",
+              f"{'n':>6}  {'cov_sf_median':>13}  {'cov_sf_p25':>10}  {'cov_sf_p75':>10}"]
+    for n in ckpts:
+        med, p25, p75 = metrics['cov_sf'][n]
+        lines.append(f"{n:>6}  {med:>13.4f}  {p25:>10.4f}  {p75:>10.4f}")
+
+    lines += ["", "== Top-N overlap (forecast-variance Sharpe) ==",
+              f"{'n':>6}  {'k':>6}  {'overlap_mean':>13}  {'overlap_std':>11}"]
+    for n in ckpts:
+        for k in thres:
+            m, s = metrics['topn_fv'][(n, k)]
+            lines.append(f"{n:>6}  {k:>6}  {m:>13.4f}  {s:>11.4f}")
+
+    with open(os.path.join(out_dir, 'nstudy_4k_summary.txt'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')
