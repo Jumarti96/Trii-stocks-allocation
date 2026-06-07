@@ -124,6 +124,10 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     """
     time_window         = cfg['time_window']
     periods_to_forecast = cfg['periods_to_forecast']
+    n_epochs   = cfg.get('transformer_epochs', 50)
+    n_warmup   = cfg.get('transformer_warmup_epochs', 5)
+    lr         = cfg.get('transformer_lr', 1e-4)
+    batch_size = cfg.get('transformer_batch_size', 32)
     if n_runs is None:
         n_runs = cfg['n_transformer_runs']
 
@@ -145,13 +149,11 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
         if verbose:
             print(f"  Training run {run + 1}/{n_runs}...")
         model      = TransformerModel(input_shape=(time_window, X.shape[2])).to(device)
-        optimizer  = optim.Adam(model.parameters(), lr=1e-4)
+        optimizer  = optim.Adam(model.parameters(), lr=lr)
         criterion  = nn.MSELoss()
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
-        n_epochs  = 50
-        n_warmup  = 5
         warmup_sched = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=0.1, end_factor=1.0, total_iters=n_warmup
         )
@@ -199,10 +201,10 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     return np.array(all_preds_runs)
 
 
-def winsorize_to_history(preds_df, returns_df):
-    """Clip forecasts to the 1st-99th percentile of historical returns."""
-    lower_w = np.percentile(returns_df.values, 1)
-    upper_w = np.percentile(returns_df.values, 99)
+def winsorize_to_history(preds_df, returns_df, lower_pct=1, upper_pct=99):
+    """Clip forecasts to the [lower_pct, upper_pct] percentile range of historical returns."""
+    lower_w = np.percentile(returns_df.values, lower_pct)
+    upper_w = np.percentile(returns_df.values, upper_pct)
     return preds_df.clip(lower=lower_w, upper=upper_w)
 
 
@@ -237,4 +239,6 @@ def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
     if verbose:
         print(f"Predictions averaged across {runs.shape[0]} runs.")
     preds_df = pd.DataFrame(runs.mean(axis=0), columns=returns_df.columns)
-    return winsorize_to_history(preds_df, returns_df)
+    lower_pct = cfg.get('winsorization_lower_pct', 1)
+    upper_pct = cfg.get('winsorization_upper_pct', 99)
+    return winsorize_to_history(preds_df, returns_df, lower_pct, upper_pct)

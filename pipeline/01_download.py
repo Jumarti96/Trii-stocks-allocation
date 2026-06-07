@@ -35,19 +35,15 @@ def main():
 
     close, volume = download_all(tickers, cfg)
     print(f"Downloaded {close.shape[1]} valid tickers.")
-    if close.shape[1] < 0.80 * len(tickers):
+    if close.shape[1] < cfg["download_warn_fraction"] * len(tickers):
         print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
               f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
-    detail = activity_filter(
-        close, volume,
-        window=cfg["liquidity_window"],
-        min_active_fraction=cfg["liquidity_min_active_fraction"],
-    )
+    detail = activity_filter(close, volume)
     health = activity_health(detail)
     print(f"Activity filter: kept {health['n_kept']}/{health['n_total']} "
           f"(excluded {health['n_excluded']}; zero-volume {health['zero_volume_fraction']:.0%})")
-    if health["zero_volume_fraction"] > 0.25:
+    if health["zero_volume_fraction"] > cfg["zero_volume_warn_threshold"]:
         print("  WARNING: many stocks have no Volume at all -> likely a Volume data-source problem.")
 
     kept = detail.index[detail["kept"]]

@@ -61,8 +61,8 @@ def main():
     preds_df.index = future_dates
 
     # Winsorisation bounds (recomputed for metadata; train_and_predict already clipped)
-    lower_w = float(np.percentile(rets.values, 1))
-    upper_w = float(np.percentile(rets.values, 99))
+    lower_w = float(np.percentile(rets.values, cfg['winsorization_lower_pct']))
+    upper_w = float(np.percentile(rets.values, cfg['winsorization_upper_pct']))
 
     # Per-period expected returns (exp-decay weighted). Annualisation is a DISPLAY
     # concern handled in step 5; the optimiser consumes these per-period values directly.

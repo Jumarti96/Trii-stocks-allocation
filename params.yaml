@@ -11,9 +11,6 @@ days_of_data: 3650            # Historical window to download (days)
 batch_size: 500                 # tickers per download batch
 download_workers: 3             # parallel batch workers
 download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
-liquidity_window: 52            # periods for active_fraction / avg dollar-volume (weekly -> ~1yr)
-liquidity_min_active_fraction: 0.90   # keep stocks trading in >= 90% of recent periods (set from calibration)
-liquidity_topn: null            # optional compute-bound cap (future knob; null = off)
 
 # Transformer model (Step 3)
 periods_to_forecast: 4        # Periods ahead to predict
@@ -34,3 +31,16 @@ min_weight: 0.05              # Minimum portfolio weight per stock
 # Output (Step 5)
 investment_cop: 115000000     # Total capital available (COP)
 output_path: "results/allocation_output.csv"
+
+# Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
+liquidity_window_fraction: 0.10       # lookback = last 10% of the time-series (proportional to download horizon)
+liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of the lookback window
+liquidity_topn: null                  # optional compute cap before the transformer step (null = off)
+download_warn_fraction: 0.80          # warn if fewer than 80% of tickers downloaded successfully
+zero_volume_warn_threshold: 0.25      # warn if > 25% of stocks report zero volume (data-source alarm)
+winsorization_lower_pct: 1            # lower percentile bound for forecast winsorisation
+winsorization_upper_pct: 99           # upper percentile bound for forecast winsorisation
+transformer_epochs: 50                # training epochs per transformer run
+transformer_warmup_epochs: 5          # LR linear-warmup epochs (out of transformer_epochs)
+transformer_lr: 0.0001                # peak Adam learning rate
+transformer_batch_size: 32            # mini-batch size for transformer training

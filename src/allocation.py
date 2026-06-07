@@ -116,13 +116,16 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     rng = np.random.default_rng(seed)
     draws = sample_mu_draws(returns, covmat, n_periods, n_draws, spread, rng)
 
+    log_every = max(1, n_draws // 10)
     rows = []
-    for mu_i in draws:
+    for i, mu_i in enumerate(draws):
         arr = rk.msr_tuned(
             riskfree_rate=rf, returns=mu_i, covmat=covmat.loc[mu_i.index, mu_i.index],
             max_weight=max_w, periods_per_year=ppy, debug=False,
         )
         rows.append(pd.Series(arr, index=mu_i.index))
+        if (i + 1) % log_every == 0 or (i + 1) == n_draws:
+            print(f"  MC draw {i + 1}/{n_draws}")
 
     raw = pd.DataFrame(rows).reset_index(drop=True)
     return apply_consensus_floor(raw.mean(axis=0), min_w)
