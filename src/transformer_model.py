@@ -127,7 +127,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     if n_runs is None:
         n_runs = cfg['n_transformer_runs']
 
-    data = returns_df.values
+    data, mu, sigma = _normalise(returns_df)
     X, Y = create_dataset(data, time_window)
     if verbose:
         print(f"Training shapes - X: {X.shape}, Y: {Y.shape}")
@@ -150,8 +150,20 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
         dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
+        n_epochs  = 50
+        n_warmup  = 5
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=n_warmup
+        )
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=n_epochs - n_warmup, eta_min=1e-6
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[n_warmup]
+        )
+
         model.train()
-        for _ in range(50):
+        for _ in range(n_epochs):
             for batch_x, batch_y in dataloader:
                 optimizer.zero_grad()
                 if use_amp:
@@ -166,6 +178,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
                     loss   = criterion(output, batch_y)
                     loss.backward()
                     optimizer.step()
+            scheduler.step()
 
         model.eval()
         run_preds   = []
@@ -181,7 +194,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
                 run_preds.append(pred[0].cpu().numpy())
                 pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
 
-        all_preds_runs.append(np.array(run_preds))
+        all_preds_runs.append(_denormalise(np.array(run_preds), mu, sigma))
 
     return np.array(all_preds_runs)
 
@@ -191,6 +204,27 @@ def winsorize_to_history(preds_df, returns_df):
     lower_w = np.percentile(returns_df.values, 1)
     upper_w = np.percentile(returns_df.values, 99)
     return preds_df.clip(lower=lower_w, upper=upper_w)
+
+
+def _normalise(returns_df):
+    """Per-stock Z-score normalisation. Returns (data, mu, sigma).
+
+    sigma is clipped to 1e-8 to prevent division by zero for dormant stocks.
+    Both mu and sigma are 1-D ndarrays of shape (n_stocks,).
+    """
+    mu = returns_df.mean().values
+    sigma = returns_df.std().clip(lower=1e-8).values
+    data = (returns_df.values - mu) / sigma
+    return data, mu, sigma
+
+
+def _denormalise(preds_arr, mu, sigma):
+    """Reverse per-stock Z-score normalisation.
+
+    preds_arr: ndarray of shape (periods_to_forecast, n_stocks) in normalised space.
+    Returns an ndarray of the same shape in original return scale.
+    """
+    return preds_arr * sigma + mu
 
 
 def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
