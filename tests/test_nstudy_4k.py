@@ -22,6 +22,18 @@ def test_compute_mu_per_run_decay_weights():
     assert np.allclose(result, 0.05, atol=1e-6)
 
 
+def test_compute_mu_per_run_decay_weights_nontrivial():
+    # Two periods, single run, single stock: values [a, b]
+    # Expected: w[0]*a + w[1]*b where w = softmax of exp(-0.2 * [1, 2])
+    a, b = 0.1, 0.5
+    preds = np.array([[[a], [b]]], dtype=np.float32)  # shape (1, 2, 1)
+    idx = np.array([1, 2])
+    w = np.exp(-0.2 * idx); w /= w.sum()
+    expected = w[0] * a + w[1] * b
+    result = compute_mu_per_run(preds)
+    assert np.allclose(result[0, 0], expected, atol=1e-6)
+
+
 def test_compute_topn_overlap_full():
     # identical scores → overlap = 1.0
     scores = np.array([0.1, 0.5, 0.9, 0.3, 0.7])

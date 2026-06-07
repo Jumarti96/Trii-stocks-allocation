@@ -45,8 +45,11 @@ def compute_topn_overlap(scores_n, scores_ref, k):
     """Fraction of top-k stocks shared between scores_n and scores_ref.
 
     scores_n, scores_ref: 1-D arrays of length n_stocks (higher = better)
+    k: number of top stocks to compare; must be <= len(scores_n)
     Returns float in [0, 1].
     """
+    if k > len(scores_n):
+        raise ValueError(f"k={k} exceeds n_stocks={len(scores_n)}")
     top_n   = set(np.argsort(scores_n)[-k:])
     top_ref = set(np.argsort(scores_ref)[-k:])
     return len(top_n & top_ref) / k
