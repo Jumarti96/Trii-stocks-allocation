@@ -23,14 +23,10 @@ PATHS = {
     '02_covmat':           os.path.join(DATA_DIR, '02_covmat.csv'),
     '02_predictions':      os.path.join(DATA_DIR, '02_predictions.csv'),
     '02_metadata':         os.path.join(DATA_DIR, '02_metadata.json'),
-    # Step 3 outputs (technical filter / allocation gate)
-    '03_selected_returns': os.path.join(DATA_DIR, '03_selected_returns.csv'),
-    '03_selected_prices':  os.path.join(DATA_DIR, '03_selected_prices.csv'),
-    '03_signals':          os.path.join(DATA_DIR, '03_signals.csv'),
-    # Step 4 outputs
-    '04_weights':          os.path.join(DATA_DIR, '04_weights.csv'),
-    # Step 5 output — set dynamically by load_config() from cfg['output_path']
-    '05_report':           os.path.join(BASE_DIR, 'results', 'allocation_output.csv'),
+    # Step 3 outputs
+    '03_weights':          os.path.join(DATA_DIR, '03_weights.csv'),
+    # Step 4 output — set dynamically by load_config() from cfg['output_path']
+    '04_report':           os.path.join(BASE_DIR, 'results', 'allocation_output.csv'),
 }
 
 
@@ -49,6 +45,6 @@ def load_config(config_path=None):
     cfg['time_window']  = cfg['time_window'] or cfg['periods_per_year']
     cfg['rf_period']    = (1 + cfg['rf_rate']) ** (1 / cfg['periods_per_year']) - 1
 
-    PATHS['05_report'] = os.path.join(BASE_DIR, cfg['output_path'])
+    PATHS['04_report'] = os.path.join(BASE_DIR, cfg['output_path'])
 
     return cfg

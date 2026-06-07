@@ -1,12 +1,12 @@
 """
-Step 5 - Report Generation
+Step 4 - Report Generation
 
 Assembles the final allocation CSV from the outputs of the previous steps.
 Computes portfolio index statistics from historical returns and appends a
 PORTFOLIO INDEX summary row.
 
 Reads  (data/): 01_returns.csv, 02_expected_returns.csv, 02_metadata.json,
-                04_weights.csv
+                03_weights.csv
 Outputs:
     results/allocation_output.csv - final human-readable allocation table
 """
@@ -30,9 +30,9 @@ from config import load_config, PATHS, BASE_DIR
 def main():
     cfg = load_config()
 
-    print("\n=== Step 5: Generating Report ===")
+    print("\n=== Step 4: Generating Report ===")
 
-    weights_df       = pd.read_csv(PATHS['04_weights'],           index_col=0)
+    weights_df       = pd.read_csv(PATHS['03_weights'],           index_col=0)
     expected_returns = pd.read_csv(PATHS['02_expected_returns'],  index_col=0).iloc[:, 0]
     rets             = pd.read_csv(PATHS['01_returns'],           index_col=0)
 
@@ -92,7 +92,7 @@ def main():
 
     output = pd.concat([output, portfolio_row])
 
-    output_path = PATHS['05_report']
+    output_path = PATHS['04_report']
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     output.to_csv(output_path)
 

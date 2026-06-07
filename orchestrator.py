@@ -9,10 +9,10 @@ Use --resume to skip steps whose output files are already present.
 
 Usage:
   python orchestrator.py                       # Run all steps
-  python orchestrator.py --steps 3 4          # Run only steps 3 and 4
-  python orchestrator.py --from 3             # Run from step 3 to the end
+  python orchestrator.py --steps 4            # Run only step 4
+  python orchestrator.py --from 2             # Run from step 2 to the end
   python orchestrator.py --resume             # Skip steps that are already cached
-  python orchestrator.py --steps 3 --resume   # Run step 3 only if not cached
+  python orchestrator.py --steps 4 --resume   # Run step 4 only if not cached
   python orchestrator.py --list               # Show step status and exit
 """
 
@@ -25,7 +25,7 @@ from pathlib import Path
 _PIPELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pipeline')
 sys.path.insert(0, _PIPELINE_DIR)
 from config import load_config, PATHS, BASE_DIR  # noqa: E402 - path insert must come first
-load_config()  # populates PATHS['05_report'] from params.yaml before STEPS is built
+load_config()  # populates PATHS['04_report'] from params.yaml before STEPS is built
 
 STEPS = {
     1: {
@@ -39,19 +39,14 @@ STEPS = {
         'outputs': [PATHS['02_expected_returns'], PATHS['02_covmat'], PATHS['02_metadata']],
     },
     3: {
-        'script':  '03_filter.py',
-        'name':    'Technical Signal Filtering',
-        'outputs': [PATHS['03_selected_returns'], PATHS['03_selected_prices']],
+        'script':  '03_allocate.py',
+        'name':    'Portfolio Allocation',
+        'outputs': [PATHS['03_weights']],
     },
     4: {
-        'script':  '04_allocate.py',
-        'name':    'Sharpe Ratio Allocation',
-        'outputs': [PATHS['04_weights']],
-    },
-    5: {
-        'script':  '05_report.py',
+        'script':  '04_report.py',
         'name':    'Report Generation',
-        'outputs': [PATHS['05_report']],
+        'outputs': [PATHS['04_report']],
     },
 }
 
