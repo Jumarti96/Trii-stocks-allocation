@@ -72,6 +72,71 @@ class TransformerModel(nn.Module):
         return x
 
 
+ARCH_DECODE_STEPS = {
+    'current':          None,
+    'A_surgical':       1,
+    'B_4':              4,
+    'B_24':             24,
+    'C_crosssectional': 1,
+}
+
+_MULTISTEP_ARCHS      = {'B_4', 'B_24'}
+_CROSSSECTIONAL_ARCHS = {'C_crosssectional'}
+
+
+class TransformerModelSurgical(nn.Module):
+    """Shared backbone for A_surgical, B_4, B_24, C_crosssectional.
+
+    Fixes three structural issues vs TransformerModel:
+      - last-token pooling instead of mean pooling
+      - 4 attention heads (head_dim=32) instead of 8 (head_dim=16)
+      - 3 encoder blocks instead of 6
+
+    decode_steps=1  → output (batch, n_features)               [autoregressive archs]
+    decode_steps>1  → output (batch, decode_steps, n_features)  [direct multistep archs]
+    """
+    def __init__(self, input_shape, decode_steps=1, num_heads=4, ff_dim=512,
+                 num_blocks=3, dropout=0.1):
+        super().__init__()
+        seq_len, num_features = input_shape
+        d_model = 128
+        self.decode_steps = decode_steps
+        self.num_features = num_features
+        self.input_proj = nn.Linear(num_features, d_model)
+        self.pos_encoding = PositionalEncoding(seq_len, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=num_heads, dim_feedforward=ff_dim,
+            dropout=dropout, batch_first=True, norm_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
+        self.output_proj = nn.Linear(d_model, num_features * decode_steps)
+
+    def forward(self, x):
+        x = self.input_proj(x)
+        x = self.pos_encoding(x)
+        x = self.transformer_encoder(x)
+        x = x[:, -1, :]                          # last-token pooling
+        x = self.output_proj(x)
+        if self.decode_steps > 1:
+            x = x.view(x.shape[0], self.decode_steps, self.num_features)
+        return x
+
+
+def build_arch(arch_name, input_shape):
+    """Factory: return the correct model instance for arch_name.
+
+    arch_name: one of ARCH_DECODE_STEPS keys
+    input_shape: (seq_len, n_features)
+    """
+    if arch_name not in ARCH_DECODE_STEPS:
+        raise ValueError(f"Unknown architecture: '{arch_name}'. "
+                         f"Valid options: {sorted(ARCH_DECODE_STEPS)}")
+    if arch_name == 'current':
+        return TransformerModel(input_shape)
+    decode_steps = ARCH_DECODE_STEPS[arch_name]
+    return TransformerModelSurgical(input_shape, decode_steps=decode_steps)
+
+
 def create_dataset(data, time_window):
     X, Y = [], []
     for i in range(len(data) - time_window):

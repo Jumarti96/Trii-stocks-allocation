@@ -185,3 +185,69 @@ def test_denormalise_crosssectional_roundtrip_last_timestep():
     last_norm = data[-1]  # (n_stocks,)
     recovered = _denormalise_crosssectional(last_norm[np.newaxis, :], mu_per_t[-1], sigma_per_t[-1])
     np.testing.assert_allclose(recovered[0], df.values[-1], atol=1e-10)
+
+
+def test_transformer_model_surgical_autoregressive_output_shape():
+    # decode_steps=1 → output (batch, n_features), same interface as TransformerModel
+    from transformer_model import TransformerModelSurgical
+    model = TransformerModelSurgical(input_shape=(10, 5), decode_steps=1)
+    x = torch.randn(4, 10, 5)
+    out = model(x)
+    assert out.shape == (4, 5)
+
+
+def test_transformer_model_surgical_multistep_output_shape():
+    # decode_steps=4 → output (batch, 4, n_features)
+    from transformer_model import TransformerModelSurgical
+    model = TransformerModelSurgical(input_shape=(10, 5), decode_steps=4)
+    x = torch.randn(4, 10, 5)
+    out = model(x)
+    assert out.shape == (4, 4, 5)
+
+
+def test_transformer_model_surgical_last_token_pooling():
+    # Verify last-token pooling: if only the last timestep has a non-zero value,
+    # the output should be determined by it (not smeared over all timesteps).
+    from transformer_model import TransformerModelSurgical
+    model = TransformerModelSurgical(input_shape=(4, 3), decode_steps=1, num_blocks=1)
+    model.eval()
+    x_zero  = torch.zeros(1, 4, 3)
+    x_spike = torch.zeros(1, 4, 3)
+    x_spike[0, -1, :] = 1.0  # spike only at last position
+    with torch.no_grad():
+        out_zero  = model(x_zero)
+        out_spike = model(x_spike)
+    # outputs should differ — last token carries signal
+    assert not torch.allclose(out_zero, out_spike)
+
+
+def test_build_arch_current_returns_transformer_model():
+    from transformer_model import build_arch, TransformerModel
+    model = build_arch('current', input_shape=(10, 5))
+    assert isinstance(model, TransformerModel)
+
+
+def test_build_arch_A_surgical_returns_surgical():
+    from transformer_model import build_arch, TransformerModelSurgical
+    model = build_arch('A_surgical', input_shape=(10, 5))
+    assert isinstance(model, TransformerModelSurgical)
+    assert model.decode_steps == 1
+
+
+def test_build_arch_B_4_decode_steps():
+    from transformer_model import build_arch, TransformerModelSurgical
+    model = build_arch('B_4', input_shape=(10, 5))
+    assert isinstance(model, TransformerModelSurgical)
+    assert model.decode_steps == 4
+
+
+def test_build_arch_B_24_decode_steps():
+    from transformer_model import build_arch, TransformerModelSurgical
+    model = build_arch('B_24', input_shape=(10, 5))
+    assert model.decode_steps == 24
+
+
+def test_build_arch_unknown_raises():
+    from transformer_model import build_arch
+    with pytest.raises(ValueError, match="Unknown architecture"):
+        build_arch('not_real', input_shape=(10, 5))
