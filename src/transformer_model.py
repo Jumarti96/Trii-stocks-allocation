@@ -75,12 +75,13 @@ class TransformerModel(nn.Module):
 ARCH_DECODE_STEPS = {
     'current':          None,
     'A_surgical':       1,
+    'B':                None,   # generic: decode_steps resolved from cfg['transformer_forecast_window']
     'B_4':              4,
     'B_24':             24,
     'C_crosssectional': 1,
 }
 
-_MULTISTEP_ARCHS      = {'B_4', 'B_24'}
+_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_24'}
 _CROSSSECTIONAL_ARCHS = {'C_crosssectional'}
 
 
@@ -122,19 +123,23 @@ class TransformerModelSurgical(nn.Module):
         return x
 
 
-def build_arch(arch_name, input_shape):
+def build_arch(arch_name, input_shape, decode_steps=None):
     """Factory: return the correct model instance for arch_name.
 
-    arch_name: one of ARCH_DECODE_STEPS keys
-    input_shape: (seq_len, n_features)
+    arch_name:    one of ARCH_DECODE_STEPS keys
+    input_shape:  (seq_len, n_features)
+    decode_steps: explicit override (required for generic 'B'); falls back to
+                  ARCH_DECODE_STEPS[arch_name] when None.
     """
     if arch_name not in ARCH_DECODE_STEPS:
         raise ValueError(f"Unknown architecture: '{arch_name}'. "
                          f"Valid options: {sorted(ARCH_DECODE_STEPS)}")
     if arch_name == 'current':
         return TransformerModel(input_shape)
-    decode_steps = ARCH_DECODE_STEPS[arch_name]
-    return TransformerModelSurgical(input_shape, decode_steps=decode_steps)
+    steps = decode_steps if decode_steps is not None else ARCH_DECODE_STEPS[arch_name]
+    if steps is None:
+        raise ValueError(f"arch '{arch_name}' requires decode_steps to be supplied")
+    return TransformerModelSurgical(input_shape, decode_steps=steps)
 
 
 def create_dataset(data, time_window):
@@ -256,8 +261,11 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
     # --- Dataset ---
     if arch in _MULTISTEP_ARCHS:
         decode_steps = ARCH_DECODE_STEPS[arch]
+        if decode_steps is None:                      # generic 'B'
+            decode_steps = cfg['transformer_forecast_window']
         X, Y = create_dataset_multistep(data, time_window, decode_steps)
     else:
+        decode_steps = None
         X, Y = create_dataset(data, time_window)
 
     if verbose:
@@ -277,7 +285,8 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         if verbose:
             print(f"  Training run {run + 1}/{n_runs}...")
 
-        model      = build_arch(arch, input_shape=(time_window, X.shape[2])).to(device)
+        model      = build_arch(arch, input_shape=(time_window, X.shape[2]),
+                               decode_steps=decode_steps).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
         criterion  = nn.MSELoss() if arch == 'current' else nn.HuberLoss(delta=1.0)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)

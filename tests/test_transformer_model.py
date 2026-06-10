@@ -323,3 +323,25 @@ def test_train_runs_default_arch_unchanged():
     rets = _tiny_rets_arch(3, n_stocks=3, n_periods=30)
     runs = train_runs(rets, cfg, n_runs=2, verbose=False)
     assert runs.shape == (2, cfg['periods_to_forecast'], 3)
+
+
+def test_build_arch_B_generic_uses_decode_steps_arg():
+    from transformer_model import build_arch, TransformerModelSurgical
+    model = build_arch('B', input_shape=(10, 5), decode_steps=24)
+    assert isinstance(model, TransformerModelSurgical)
+    assert model.decode_steps == 24
+
+
+def test_build_arch_B_generic_without_decode_steps_raises():
+    from transformer_model import build_arch
+    with pytest.raises(ValueError, match="requires decode_steps"):
+        build_arch('B', input_shape=(10, 5))
+
+
+def test_train_runs_arch_B_uses_forecast_window():
+    cfg = _tiny_arch_cfg()
+    cfg['transformer_forecast_window'] = 6   # generic B reads this
+    cfg['periods_to_forecast'] = 2           # must NOT drive B's output length
+    rets = _tiny_rets_arch(7)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B')
+    assert runs.shape == (1, 6, rets.shape[1])
