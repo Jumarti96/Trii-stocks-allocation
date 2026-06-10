@@ -112,3 +112,48 @@ def compute_core_sets(freq_dict, n_seeds):
             min_count = int(np.ceil(pct * n_seeds))
             result[(n, k, pct)] = int((counts >= min_count).sum())
     return result
+
+
+def write_outputs(results, out_dir):
+    """Write all 4 output files to out_dir (created if absent)."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    # pairwise_overlap.csv
+    rows = [
+        {'n': n, 'k': k,
+         'overlap_mean': mean, 'overlap_std': std,
+         'overlap_min': mn,   'overlap_max': mx}
+        for (n, k), (mean, std, mn, mx) in sorted(results['pairwise'].items())
+    ]
+    pd.DataFrame(rows).to_csv(os.path.join(out_dir, 'pairwise_overlap.csv'), index=False)
+
+    # core_set_size.csv
+    rows = [
+        {'n': n, 'k': k, 'threshold_pct': pct, 'core_size': size}
+        for (n, k, pct), size in sorted(results['core'].items())
+    ]
+    pd.DataFrame(rows).to_csv(os.path.join(out_dir, 'core_set_size.csv'), index=False)
+
+    # stock_frequency.csv
+    freq = results['freq']
+    col_names = {key: f"n{key[0]}_k{key[1]}" for key in sorted(freq)}
+    df_freq = pd.DataFrame({col_names[key]: freq[key] for key in sorted(freq)})
+    df_freq.index.name = 'stock_idx'
+    df_freq.to_csv(os.path.join(out_dir, 'stock_frequency.csv'))
+
+    # seed_stability_summary.txt
+    lines = [
+        "Cross-seed top-N stability study",
+        f"n_seeds={results['n_seeds']}, n_arms={results['n_arms']}, "
+        f"thresholds={results['thresholds']}, n_stocks={results['n_stocks']}",
+        "",
+        "== Pairwise overlap (mean +/- std [min, max]) ==",
+    ]
+    for (n, k) in sorted(results['pairwise']):
+        mean, std, mn, mx = results['pairwise'][(n, k)]
+        lines.append(f"  n={n:3d}, k={k:3d}: {mean:.4f} +/- {std:.4f}  [{mn:.4f}, {mx:.4f}]")
+    lines += ["", "== Core set sizes =="]
+    for (n, k, pct), size in sorted(results['core'].items()):
+        lines.append(f"  n={n:3d}, k={k:3d}, {pct:.0%}: {size}")
+    with open(os.path.join(out_dir, 'seed_stability_summary.txt'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')

@@ -1,6 +1,8 @@
 import os
 import sys
+import tempfile
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experiments"))
@@ -10,6 +12,7 @@ from seed_stability import (
     compute_pairwise_overlaps,
     compute_stock_frequencies,
     compute_core_sets,
+    write_outputs,
 )
 
 
@@ -139,3 +142,48 @@ def test_compute_core_sets_values():
     assert result[(3, 2, 0.8)] == 1
     # 60%: ceil(0.6*3)=ceil(1.8)=2 -> stocks 0 and 1 -> 2
     assert result[(3, 2, 0.6)] == 2
+
+
+def _make_stub_results():
+    n_stocks = 5
+    n_arms   = [2, 4]
+    thresholds = [2]
+    n_seeds  = 3
+    seed_sets = [
+        {(2, 2): frozenset([0, 1]), (4, 2): frozenset([0, 1])},
+        {(2, 2): frozenset([0, 2]), (4, 2): frozenset([0, 2])},
+        {(2, 2): frozenset([1, 2]), (4, 2): frozenset([1, 2])},
+    ]
+    freq = compute_stock_frequencies(seed_sets, n_stocks, n_arms, thresholds)
+    return {
+        'pairwise':   compute_pairwise_overlaps(seed_sets),
+        'core':       compute_core_sets(freq, n_seeds),
+        'freq':       freq,
+        'n_seeds':    n_seeds,
+        'n_arms':     n_arms,
+        'thresholds': thresholds,
+        'n_stocks':   n_stocks,
+    }
+
+
+def test_write_outputs_creates_all_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(_make_stub_results(), tmp)
+        assert set(os.listdir(tmp)) == {
+            'pairwise_overlap.csv', 'core_set_size.csv',
+            'stock_frequency.csv', 'seed_stability_summary.txt',
+        }
+
+
+def test_write_outputs_pairwise_columns():
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(_make_stub_results(), tmp)
+        df = pd.read_csv(os.path.join(tmp, 'pairwise_overlap.csv'))
+        assert list(df.columns) == ['n', 'k', 'overlap_mean', 'overlap_std', 'overlap_min', 'overlap_max']
+
+
+def test_write_outputs_core_columns():
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(_make_stub_results(), tmp)
+        df = pd.read_csv(os.path.join(tmp, 'core_set_size.csv'))
+        assert list(df.columns) == ['n', 'k', 'threshold_pct', 'core_size']
