@@ -148,3 +148,41 @@ def test_scheduler_lr_profile():
     assert lrs[0] < lrs[4]    # warmup: lr rising toward epoch 5
     assert lrs[5] > lrs[49]   # cosine: lr falling after warmup
     assert lrs[49] < 1e-5     # near zero at the end
+
+
+from transformer_model import _normalise_crosssectional, _denormalise_crosssectional
+
+
+def test_normalise_crosssectional_shape():
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame(rng.normal(0, 0.02, (50, 5)), columns=list("ABCDE"))
+    data, mu_per_t, sigma_per_t = _normalise_crosssectional(df)
+    assert data.shape == (50, 5)
+    assert mu_per_t.shape == (50,)
+    assert sigma_per_t.shape == (50,)
+
+
+def test_normalise_crosssectional_zero_mean_per_timestep():
+    rng = np.random.default_rng(1)
+    df = pd.DataFrame(rng.normal(0, 0.02, (30, 8)), columns=[f"S{i}" for i in range(8)])
+    data, _, _ = _normalise_crosssectional(df)
+    # at every timestep the mean across stocks should be ~0
+    np.testing.assert_allclose(data.mean(axis=1), 0.0, atol=1e-10)
+
+
+def test_normalise_crosssectional_unit_std_per_timestep():
+    rng = np.random.default_rng(2)
+    df = pd.DataFrame(rng.normal(0, 0.02, (30, 8)), columns=[f"S{i}" for i in range(8)])
+    data, _, _ = _normalise_crosssectional(df)
+    # at every timestep the std across stocks should be ~1
+    np.testing.assert_allclose(data.std(axis=1), 1.0, atol=1e-6)
+
+
+def test_denormalise_crosssectional_roundtrip_last_timestep():
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame(rng.normal(0, 0.02, (30, 5)), columns=list("ABCDE"))
+    data, mu_per_t, sigma_per_t = _normalise_crosssectional(df)
+    # denormalise last row using last timestep stats
+    last_norm = data[-1]  # (n_stocks,)
+    recovered = _denormalise_crosssectional(last_norm[np.newaxis, :], mu_per_t[-1], sigma_per_t[-1])
+    np.testing.assert_allclose(recovered[0], df.values[-1], atol=1e-10)

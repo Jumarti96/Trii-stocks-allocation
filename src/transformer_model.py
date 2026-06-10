@@ -229,6 +229,29 @@ def _denormalise(preds_arr, mu, sigma):
     return preds_arr * sigma + mu
 
 
+def _normalise_crosssectional(returns_df):
+    """Per-timestep cross-sectional Z-score normalization.
+
+    At each timestep, standardizes across stocks (not across time per stock).
+    Returns (data, mu_per_t, sigma_per_t) where mu and sigma have shape (n_periods,).
+    At prediction time use the last timestep's stats for denormalization.
+    """
+    data = returns_df.values.copy()
+    mu_per_t    = data.mean(axis=1)
+    sigma_per_t = data.std(axis=1).clip(min=1e-8)
+    data_norm   = (data - mu_per_t[:, np.newaxis]) / sigma_per_t[:, np.newaxis]
+    return data_norm, mu_per_t, sigma_per_t
+
+
+def _denormalise_crosssectional(preds_arr, mu_last, sigma_last):
+    """Reverse cross-sectional normalization using the last training timestep's stats.
+
+    preds_arr: ndarray (n_steps, n_stocks) in normalized space.
+    mu_last, sigma_last: scalars from the final training timestep.
+    """
+    return preds_arr * sigma_last + mu_last
+
+
 def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
     """Train n_runs Transformers on returns_df and return averaged, winsorised forecasts.
 
