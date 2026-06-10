@@ -4,7 +4,7 @@
 
 # Data and timing
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
-interval: "1wk"              # "1wk" for weekly, "1mo" for monthly
+interval: "1wk"               # "1wk" for weekly, "1mo" for monthly
 days_of_data: 3650            # Historical window to download (days)
 
 # Step 1 download + activity filter
@@ -14,7 +14,7 @@ download_timeout: 30            # per-batch yfinance timeout (s); generous for a
 
 # Transformer model (Step 3)
 periods_to_forecast: 4        # Periods ahead to predict
-n_transformer_runs: 100        # Independent training runs; predictions are averaged
+n_transformer_runs: 150       # Independent training runs; predictions are averaged
 time_window: null             # Input sequence length; null means derived as periods_per_year
 
 # Portfolio optimisation (Step 4)
@@ -29,7 +29,7 @@ max_weight: 0.15              # Maximum portfolio weight per stock
 min_weight: 0.05              # Minimum portfolio weight per stock
 
 # Output (Step 5)
-investment_cop: 115000000     # Total capital available (COP)
+investment_cop: 120000000     # Total capital available (COP)
 output_path: "results/allocation_output.csv"
 
 # Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
