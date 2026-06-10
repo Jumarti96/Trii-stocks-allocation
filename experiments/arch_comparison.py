@@ -91,3 +91,36 @@ def compute_hit_rate(predicted, realized):
     real_sign = np.sign(realized)
     matches   = (pred_sign == real_sign) & (pred_sign != 0) & (real_sign != 0)
     return float(matches.mean())
+
+
+# ---------------------------------------------------------------------------
+# Benchmark predictors (no model training)
+# ---------------------------------------------------------------------------
+
+def predict_zero(n_stocks):
+    """B1: null forecast — all stocks at zero return."""
+    return np.zeros(n_stocks)
+
+
+def predict_momentum(returns_window, lambda_=0.2):
+    """B2: exp-decay weighted mean of past returns per stock.
+
+    returns_window: ndarray (time_window, n_stocks)
+    Same decay convention as weighted_mean_return in transformer_model.py.
+    """
+    n_periods = returns_window.shape[0]
+    idx = np.arange(1, n_periods + 1)
+    w   = np.exp(-lambda_ * idx)
+    w  /= w.sum()
+    return (returns_window * w[:, np.newaxis]).sum(axis=0)
+
+
+def predict_persistence(returns_window):
+    """B3: last observed weekly return repeated as forecast."""
+    return returns_window[-1].copy()
+
+
+def predict_mean_reversion(returns_window):
+    """B4: negative of last period's cross-sectional deviation."""
+    last = returns_window[-1]
+    return -(last - last.mean())

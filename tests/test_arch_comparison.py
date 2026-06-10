@@ -83,3 +83,48 @@ def test_compute_spearman_rho_constant_realized_returns_zero():
     x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
     y = np.ones(5)
     assert compute_spearman_rho(x, y) == pytest.approx(0.0)
+
+
+from arch_comparison import (
+    predict_zero,
+    predict_momentum,
+    predict_persistence,
+    predict_mean_reversion,
+)
+
+
+def test_predict_zero_shape_and_values():
+    result = predict_zero(7)
+    assert result.shape == (7,)
+    np.testing.assert_array_equal(result, 0.0)
+
+
+def test_predict_momentum_shape():
+    window = np.random.default_rng(0).normal(0, 0.02, (20, 6))
+    result = predict_momentum(window)
+    assert result.shape == (6,)
+
+
+def test_predict_momentum_ranking():
+    # Stock 0 has the highest returns throughout → highest predicted momentum
+    window = np.zeros((10, 4))
+    window[:, 0] = 0.05  # stock 0: consistently high
+    window[:, 3] = -0.05  # stock 3: consistently low
+    result = predict_momentum(window)
+    assert result[0] == max(result)
+    assert result[3] == min(result)
+
+
+def test_predict_persistence_equals_last_row():
+    window = np.random.default_rng(1).normal(0, 0.02, (15, 5))
+    result = predict_persistence(window)
+    np.testing.assert_array_equal(result, window[-1])
+
+
+def test_predict_mean_reversion_sign():
+    # Stock above cross-section → negative prediction; stock below → positive
+    window = np.zeros((5, 4))
+    window[-1] = [0.10, 0.01, 0.01, -0.10]  # last period: stock 0 high, stock 3 low
+    result = predict_mean_reversion(window)
+    assert result[0] < 0   # above cross-section → predict downward
+    assert result[3] > 0   # below cross-section → predict upward
