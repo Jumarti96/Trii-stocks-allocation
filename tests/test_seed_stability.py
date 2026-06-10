@@ -187,3 +187,88 @@ def test_write_outputs_core_columns():
         write_outputs(_make_stub_results(), tmp)
         df = pd.read_csv(os.path.join(tmp, 'core_set_size.csv'))
         assert list(df.columns) == ['n', 'k', 'threshold_pct', 'core_size']
+
+
+def test_run_one_seed_output_structure():
+    from seed_stability import run_one_seed
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+    from sklearn.covariance import LedoitWolf
+
+    rng = np.random.default_rng(0)
+    n_stocks, n_periods = 5, 30
+    rets_df = pd.DataFrame(
+        rng.standard_normal((n_periods, n_stocks)) * 0.01,
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+    cfg = load_config()
+    cfg['time_window']             = 8
+    cfg['periods_to_forecast']     = 2
+    cfg['transformer_epochs']      = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    sigma_lw = np.sqrt(np.diag(LedoitWolf().fit(rets_df.values).covariance_))
+    n_arms   = [2, 4]
+    thresholds = [3]
+
+    result = run_one_seed(rets_df, sigma_lw, cfg, n_arms, thresholds, seed=0)
+
+    assert set(result.keys()) == {(2, 3), (4, 3)}
+    for key, s in result.items():
+        assert isinstance(s, frozenset)
+        assert len(s) == key[1]
+
+
+def test_run_timing_calibration_returns_positive():
+    from seed_stability import run_timing_calibration
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+
+    rng = np.random.default_rng(7)
+    rets_df = pd.DataFrame(
+        rng.standard_normal((30, 5)) * 0.01,
+        columns=[f"S{i}" for i in range(5)],
+    )
+    cfg = load_config()
+    cfg['time_window']             = 8
+    cfg['periods_to_forecast']     = 2
+    cfg['transformer_epochs']      = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    per_run, total = run_timing_calibration(rets_df, cfg, n_cal=2)
+    assert per_run > 0
+    assert total   > 0
+
+
+def test_main_smoke(tmp_path, monkeypatch):
+    """Run main() end-to-end with tiny overrides -- must write all 4 output files."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
+    from config import load_config
+    import seed_stability as mod
+
+    rng = np.random.default_rng(99)
+    n_stocks, n_periods = 5, 30
+    rets_df = pd.DataFrame(
+        rng.standard_normal((n_periods, n_stocks)) * 0.01,
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+    cfg = load_config()
+    cfg['time_window']             = 8
+    cfg['periods_to_forecast']     = 2
+    cfg['transformer_epochs']      = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    monkeypatch.setattr(mod, "N_SEEDS",    3)
+    monkeypatch.setattr(mod, "N_ARMS",     [2, 4])
+    monkeypatch.setattr(mod, "THRESHOLDS", [3])
+    monkeypatch.setattr(mod, "_OUT_DIR",   str(tmp_path))
+    monkeypatch.setattr(mod, "_load_data", lambda: (rets_df, cfg))
+    monkeypatch.setattr(mod, "run_timing_calibration", lambda *a, **kw: (1.0, 900.0))
+    monkeypatch.setattr("builtins.input", lambda _="": "y")
+
+    mod.main()
+
+    assert set(os.listdir(str(tmp_path))) == {
+        'pairwise_overlap.csv', 'core_set_size.csv',
+        'stock_frequency.csv', 'seed_stability_summary.txt',
+    }

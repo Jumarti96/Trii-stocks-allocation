@@ -157,3 +157,76 @@ def write_outputs(results, out_dir):
         lines.append(f"  n={n:3d}, k={k:3d}, {pct:.0%}: {size}")
     with open(os.path.join(out_dir, 'seed_stability_summary.txt'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
+
+
+_OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "results", "seed_stability")
+
+
+def _load_data():
+    cfg     = load_config()
+    rets_df = pd.read_csv(PATHS['01_returns'], index_col=0)
+    return rets_df, cfg
+
+
+def run_timing_calibration(rets_df, cfg, n_cal=10):
+    """Train n_cal models and return (per_run_seconds, estimated_total_seconds)."""
+    t0 = time.time()
+    train_runs(rets_df, cfg, n_runs=n_cal, verbose=False)
+    per_run = (time.time() - t0) / n_cal
+    return per_run, per_run * N_SEEDS * max(N_ARMS)
+
+
+def run_one_seed(rets_df, sigma_lw, cfg, n_arms, thresholds, seed):
+    """Train max(n_arms) models with a fixed seed, return top-k sets per (n, k)."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    preds_3d   = train_runs(rets_df, cfg, n_runs=max(n_arms), verbose=False)
+    mu_per_run = compute_mu_per_run(preds_3d)
+    return compute_topk_sets(mu_per_run, sigma_lw, n_arms, thresholds)
+
+
+def main():
+    rets_df, cfg = _load_data()
+    n_stocks = rets_df.shape[1]
+
+    print(f"\n=== seed_stability ===")
+    print(f"Universe: {n_stocks} stocks, {len(rets_df)} periods")
+    print(f"Plan: {N_SEEDS} seeds, n_arms={N_ARMS}, thresholds={THRESHOLDS}")
+
+    print("\nTiming calibration (10 runs)...")
+    per_run, est_total = run_timing_calibration(rets_df, cfg, n_cal=10)
+    print(f"  {per_run:.1f}s/run  ->  estimated total: {est_total/3600:.1f}h ({est_total:.0f}s)")
+    print("Proceed? [y/N] ", end="", flush=True)
+    if input().strip().lower() != "y":
+        print("Aborted.")
+        return
+
+    sigma_lw = np.sqrt(np.diag(LedoitWolf().fit(rets_df.values).covariance_))
+
+    topk_sets_per_seed = []
+    for seed in range(N_SEEDS):
+        print(f"\nSeed {seed + 1}/{N_SEEDS}  (seed={seed})")
+        topk_sets_per_seed.append(
+            run_one_seed(rets_df, sigma_lw, cfg, N_ARMS, THRESHOLDS, seed=seed)
+        )
+
+    print("\nAggregating...")
+    freq = compute_stock_frequencies(topk_sets_per_seed, n_stocks, N_ARMS, THRESHOLDS)
+    results = {
+        'pairwise':   compute_pairwise_overlaps(topk_sets_per_seed),
+        'core':       compute_core_sets(freq, N_SEEDS),
+        'freq':       freq,
+        'n_seeds':    N_SEEDS,
+        'n_arms':     N_ARMS,
+        'thresholds': THRESHOLDS,
+        'n_stocks':   n_stocks,
+    }
+
+    print(f"Writing results to {_OUT_DIR}")
+    write_outputs(results, _OUT_DIR)
+    print("Done.")
+
+
+if __name__ == '__main__':
+    main()
