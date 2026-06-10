@@ -296,3 +296,81 @@ def write_outputs(results_by_arch_seed, horizons, out_dir):
 
     with open(os.path.join(out_dir, 'arch_comparison_summary.txt'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
+
+
+# ---------------------------------------------------------------------------
+# Harness
+# ---------------------------------------------------------------------------
+
+def _load_data():
+    cfg     = load_config()
+    rets_df = pd.read_csv(PATHS['01_returns'], index_col=0)
+    return rets_df, cfg
+
+
+def run_timing_calibration(rets_df, cfg, n_cal=5):
+    """Train n_cal models with arch='current' and estimate total runtime."""
+    t0 = time.time()
+    train_runs(rets_df, cfg, n_runs=n_cal, verbose=False, arch='current')
+    per_run = (time.time() - t0) / n_cal
+    # Estimate: n_archs * n_seeds * n_blocks * n_runs * per_run
+    n_train_archs = len(ARCHITECTURES)
+    est_total = per_run * n_train_archs * len(N_SEEDS) * N_BLOCKS * N_RUNS
+    return per_run, est_total
+
+
+def main():
+    rets_df, cfg = _load_data()
+    n_stocks     = rets_df.shape[1]
+    n_periods    = len(rets_df)
+    time_window  = cfg['time_window']
+
+    print(f"\n=== arch_comparison ===")
+    print(f"Universe: {n_stocks} stocks, {n_periods} periods")
+    print(f"Architectures: {ARCHITECTURES}")
+    print(f"Plan: {N_SEEDS} seeds x {N_BLOCKS} blocks x n_runs={N_RUNS}, "
+          f"horizons={HORIZONS}")
+
+    print("\nTiming calibration (5 runs, arch=current)...")
+    per_run, est_total = run_timing_calibration(rets_df, cfg, n_cal=5)
+    print(f"  {per_run:.1f}s/run  ->  estimated total: {est_total/3600:.1f}h")
+    print("Proceed? [y/N] ", end="", flush=True)
+    if input().strip().lower() != "y":
+        print("Aborted.")
+        return
+
+    results_by_arch_seed = {}
+
+    for seed in N_SEEDS:
+        print(f"\n--- Seed {seed} ---")
+        for arch in ARCHITECTURES:
+            print(f"  Architecture: {arch}")
+            block_results = []
+            for block_idx in range(N_BLOCKS):
+                # Walk-forward split spaced 4 weeks apart.
+                # Last block ends exactly max(HORIZONS) before end of data.
+                block_start = n_periods - max(HORIZONS) - (N_BLOCKS - 1 - block_idx) * 4
+                train = rets_df.iloc[:block_start]
+                test  = rets_df.iloc[block_start:block_start + max(HORIZONS)]
+
+                if len(train) < time_window + 2 or len(test) < max(HORIZONS):
+                    continue
+
+                np.random.seed(seed)
+                torch.manual_seed(seed)
+
+                block_results.append(
+                    run_one_block(arch, train, test, cfg, N_RUNS, HORIZONS)
+                )
+                if (block_idx + 1) % 5 == 0:
+                    print(f"    block {block_idx + 1}/{N_BLOCKS} done")
+
+            results_by_arch_seed[(arch, seed)] = aggregate_results(block_results, HORIZONS)
+
+    print(f"\nWriting results to {_OUT_DIR}")
+    write_outputs(results_by_arch_seed, HORIZONS, _OUT_DIR)
+    print("Done.")
+
+
+if __name__ == '__main__':
+    main()

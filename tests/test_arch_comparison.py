@@ -256,3 +256,40 @@ def test_write_outputs_rank_ic_columns():
         df = pd.read_csv(os.path.join(tmp, 'rank_ic.csv'))
     assert set(df.columns) >= {'arch', 'seed', 'horizon',
                                 'mean_rank_ic', 'std_rank_ic', 'icir'}
+
+
+from arch_comparison import main
+import arch_comparison as mod
+
+
+def test_main_smoke(tmp_path, monkeypatch):
+    """Run main() end-to-end with tiny overrides — must write all 4 output files."""
+    rng = np.random.default_rng(42)
+    n_stocks, n_periods = 6, 50
+    rets_df = pd.DataFrame(
+        rng.normal(0, 0.02, (n_periods, n_stocks)),
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+    cfg = load_config()
+    cfg['time_window']               = 8
+    cfg['periods_to_forecast']       = 4
+    cfg['transformer_epochs']        = 1
+    cfg['transformer_warmup_epochs'] = 0
+
+    monkeypatch.setattr(mod, "ARCHITECTURES", ['current', 'A_surgical'])
+    monkeypatch.setattr(mod, "N_RUNS",    1)
+    monkeypatch.setattr(mod, "N_BLOCKS",  2)
+    monkeypatch.setattr(mod, "N_SEEDS",   [0])
+    monkeypatch.setattr(mod, "HORIZONS",  [4])
+    monkeypatch.setattr(mod, "_OUT_DIR",  str(tmp_path))
+    monkeypatch.setattr(mod, "_load_data", lambda: (rets_df, cfg))
+    monkeypatch.setattr(mod, "run_timing_calibration", lambda *a, **kw: (1.0, 7200.0))
+    monkeypatch.setattr("builtins.input", lambda _="": "y")
+
+    main()
+
+    files = set(os.listdir(str(tmp_path)))
+    assert 'rank_ic.csv'                 in files
+    assert 'topk_precision.csv'          in files
+    assert 'hit_rate.csv'                in files
+    assert 'arch_comparison_summary.txt' in files
