@@ -166,6 +166,42 @@ def create_dataset_multistep(data, time_window, decode_steps):
     return np.array(X), np.array(Y)
 
 
+def _add_reversal_channel(norm_data):
+    """Append the cross-sectional demean of per-stock-normalised returns as extra channels.
+
+    norm_data: ndarray (n_periods, n_stocks) already per-stock normalised.
+    Returns ndarray (n_periods, 2 * n_stocks): [raw_norm | raw_norm - cross_sectional_mean].
+    """
+    demeaned = norm_data - norm_data.mean(axis=1, keepdims=True)
+    return np.concatenate([norm_data, demeaned], axis=1)
+
+
+def create_dataset_xy_multistep(x_data, y_data, time_window, decode_steps):
+    """Direct multi-step windows with distinct input/target channel counts.
+
+    x_data: (n_periods, n_in)   y_data: (n_periods, n_out)
+    X: (n_samples, time_window, n_in)   Y: (n_samples, decode_steps, n_out)
+    """
+    X, Y = [], []
+    n_samples = len(x_data) - time_window - decode_steps + 1
+    for i in range(n_samples):
+        X.append(x_data[i:(i + time_window)])
+        Y.append(y_data[(i + time_window):(i + time_window + decode_steps)])
+    return np.array(X), np.array(Y)
+
+
+def create_dataset_xy_singlestep(x_data, y_data, time_window):
+    """Autoregressive (single-step) windows with distinct input/target channel counts.
+
+    X: (n_samples, time_window, n_in)   Y: (n_samples, n_out)
+    """
+    X, Y = [], []
+    for i in range(len(x_data) - time_window):
+        X.append(x_data[i:(i + time_window)])
+        Y.append(y_data[i + time_window])
+    return np.array(X), np.array(Y)
+
+
 def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
     """Autoregressively decode periods_to_forecast steps from last_window.
 

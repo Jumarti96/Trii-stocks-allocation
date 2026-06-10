@@ -355,3 +355,34 @@ def test_build_arch_B_12_decode_steps():
 def test_build_arch_B_54_decode_steps():
     from transformer_model import build_arch
     assert build_arch('B_54', input_shape=(10, 5)).decode_steps == 54
+
+
+def test_add_reversal_channel_doubles_width_and_demeans():
+    from transformer_model import _add_reversal_channel
+    norm = np.array([[1.0, 3.0], [2.0, 4.0]])   # (2 periods, 2 stocks)
+    aug = _add_reversal_channel(norm)
+    assert aug.shape == (2, 4)                    # raw(2) + demeaned(2)
+    np.testing.assert_allclose(aug[:, :2], norm)  # first block = raw
+    # demeaned block: each row minus its cross-sectional mean
+    np.testing.assert_allclose(aug[:, 2:], norm - norm.mean(axis=1, keepdims=True))
+
+
+def test_create_dataset_xy_multistep_separate_channels():
+    from transformer_model import create_dataset_xy_multistep
+    x_data = np.arange(40).reshape(10, 4).astype(float)   # 4 input channels
+    y_data = np.arange(20).reshape(10, 2).astype(float)   # 2 output channels
+    X, Y = create_dataset_xy_multistep(x_data, y_data, time_window=5, decode_steps=2)
+    assert X.shape == (4, 5, 4)
+    assert Y.shape == (4, 2, 2)
+    np.testing.assert_array_equal(X[0, :, :], x_data[0:5])
+    np.testing.assert_array_equal(Y[0, :, :], y_data[5:7])
+
+
+def test_create_dataset_xy_singlestep_separate_channels():
+    from transformer_model import create_dataset_xy_singlestep
+    x_data = np.arange(40).reshape(10, 4).astype(float)
+    y_data = np.arange(20).reshape(10, 2).astype(float)
+    X, Y = create_dataset_xy_singlestep(x_data, y_data, time_window=5)
+    assert X.shape == (5, 5, 4)
+    assert Y.shape == (5, 2)
+    np.testing.assert_array_equal(Y[0], y_data[5])
