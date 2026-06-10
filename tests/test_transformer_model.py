@@ -386,3 +386,25 @@ def test_create_dataset_xy_singlestep_separate_channels():
     assert X.shape == (5, 5, 4)
     assert Y.shape == (5, 2)
     np.testing.assert_array_equal(Y[0], y_data[5])
+
+
+def test_surgical_n_outputs_decoupled_multistep():
+    from transformer_model import TransformerModelSurgical
+    # 8 input channels, 4 output stocks, decode_steps=3
+    model = TransformerModelSurgical(input_shape=(10, 8), decode_steps=3, n_outputs=4)
+    out = model(torch.randn(2, 10, 8))
+    assert out.shape == (2, 3, 4)
+
+
+def test_current_n_outputs_decoupled():
+    from transformer_model import TransformerModel
+    model = TransformerModel(input_shape=(10, 8), n_outputs=4)
+    out = model(torch.randn(2, 10, 8))
+    assert out.shape == (2, 4)
+
+
+def test_surgical_n_outputs_defaults_to_num_features():
+    from transformer_model import TransformerModelSurgical
+    model = TransformerModelSurgical(input_shape=(10, 5), decode_steps=2)
+    out = model(torch.randn(2, 10, 5))
+    assert out.shape == (2, 2, 5)

@@ -50,10 +50,12 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, input_shape, num_heads=8, ff_dim=512, num_blocks=6, dropout=0.1):
+    def __init__(self, input_shape, num_heads=8, ff_dim=512, num_blocks=6, dropout=0.1,
+                 n_outputs=None):
         super().__init__()
         seq_len, num_features = input_shape
         d_model = 128
+        n_outputs = n_outputs if n_outputs is not None else num_features
         self.input_proj = nn.Linear(num_features, d_model)
         self.pos_encoding = PositionalEncoding(seq_len, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -61,7 +63,7 @@ class TransformerModel(nn.Module):
             dropout=dropout, batch_first=True, norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
-        self.output_proj = nn.Linear(d_model, num_features)
+        self.output_proj = nn.Linear(d_model, n_outputs)
 
     def forward(self, x):
         x = self.input_proj(x)
@@ -99,12 +101,13 @@ class TransformerModelSurgical(nn.Module):
     decode_steps>1  → output (batch, decode_steps, n_features)  [direct multistep archs]
     """
     def __init__(self, input_shape, decode_steps=1, num_heads=4, ff_dim=512,
-                 num_blocks=3, dropout=0.1):
+                 num_blocks=3, dropout=0.1, n_outputs=None):
         super().__init__()
         seq_len, num_features = input_shape
         d_model = 128
         self.decode_steps = decode_steps
         self.num_features = num_features
+        self.n_outputs = n_outputs if n_outputs is not None else num_features
         self.input_proj = nn.Linear(num_features, d_model)
         self.pos_encoding = PositionalEncoding(seq_len, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -112,7 +115,7 @@ class TransformerModelSurgical(nn.Module):
             dropout=dropout, batch_first=True, norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
-        self.output_proj = nn.Linear(d_model, num_features * decode_steps)
+        self.output_proj = nn.Linear(d_model, self.n_outputs * decode_steps)
 
     def forward(self, x):
         x = self.input_proj(x)
@@ -121,7 +124,7 @@ class TransformerModelSurgical(nn.Module):
         x = x[:, -1, :]                          # last-token pooling
         x = self.output_proj(x)
         if self.decode_steps > 1:
-            x = x.view(x.shape[0], self.decode_steps, self.num_features)
+            x = x.view(x.shape[0], self.decode_steps, self.n_outputs)
         return x
 
 
