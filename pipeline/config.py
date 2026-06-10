@@ -30,6 +30,24 @@ PATHS = {
 }
 
 
+def _resolve_transformer_config(cfg):
+    """Apply transformer arch/forecast-window defaults and validate the slice guard.
+
+    - transformer_arch defaults to 'current'.
+    - transformer_forecast_window defaults to periods_per_year (None/absent -> ppy).
+    - Direct multi-step archs ('B'...) must emit at least periods_to_forecast steps.
+    """
+    cfg.setdefault('transformer_arch', 'current')
+    cfg['transformer_forecast_window'] = (cfg.get('transformer_forecast_window')
+                                          or cfg['periods_per_year'])
+    if cfg['transformer_arch'].startswith('B'):
+        if cfg['transformer_forecast_window'] < cfg['periods_to_forecast']:
+            raise ValueError(
+                f"transformer_forecast_window ({cfg['transformer_forecast_window']}) "
+                f"must be >= periods_to_forecast ({cfg['periods_to_forecast']})")
+    return cfg
+
+
 def load_config(config_path=None):
     """Load params.yaml and return a config dict with derived values added."""
     if config_path is None:
@@ -46,5 +64,7 @@ def load_config(config_path=None):
     cfg['rf_period']    = (1 + cfg['rf_rate']) ** (1 / cfg['periods_per_year']) - 1
 
     PATHS['04_report'] = os.path.join(BASE_DIR, cfg['output_path'])
+
+    cfg = _resolve_transformer_config(cfg)
 
     return cfg
