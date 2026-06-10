@@ -12,6 +12,8 @@ from transformer_model import (
     annualize_period_return,
     annualize_expected_returns,
     weighted_mean_return,
+    _normalise_crosssectional,
+    _denormalise_crosssectional,
 )
 
 
@@ -150,9 +152,6 @@ def test_scheduler_lr_profile():
     assert lrs[49] < 1e-5     # near zero at the end
 
 
-from transformer_model import _normalise_crosssectional, _denormalise_crosssectional
-
-
 def test_normalise_crosssectional_shape():
     rng = np.random.default_rng(0)
     df = pd.DataFrame(rng.normal(0, 0.02, (50, 5)), columns=list("ABCDE"))
@@ -175,7 +174,7 @@ def test_normalise_crosssectional_unit_std_per_timestep():
     df = pd.DataFrame(rng.normal(0, 0.02, (30, 8)), columns=[f"S{i}" for i in range(8)])
     data, _, _ = _normalise_crosssectional(df)
     # at every timestep the std across stocks should be ~1
-    np.testing.assert_allclose(data.std(axis=1), 1.0, atol=1e-6)
+    np.testing.assert_allclose(data.std(axis=1, ddof=1), 1.0, atol=1e-6)
 
 
 def test_denormalise_crosssectional_roundtrip_last_timestep():

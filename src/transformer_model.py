@@ -230,16 +230,16 @@ def _denormalise(preds_arr, mu, sigma):
 
 
 def _normalise_crosssectional(returns_df):
-    """Per-timestep cross-sectional Z-score normalization.
+    """Per-timestep cross-sectional Z-score normalisation.
 
-    At each timestep, standardizes across stocks (not across time per stock).
+    At each timestep, standardises across stocks (not across time per stock).
     Returns (data, mu_per_t, sigma_per_t) where mu and sigma have shape (n_periods,).
-    At prediction time use the last timestep's stats for denormalization.
+    At prediction time use the last timestep's stats for denormalisation.
     """
     data = returns_df.values.copy()
-    mu_per_t    = data.mean(axis=1)
-    sigma_per_t = data.std(axis=1).clip(min=1e-8)
-    data_norm   = (data - mu_per_t[:, np.newaxis]) / sigma_per_t[:, np.newaxis]
+    mu_per_t = data.mean(axis=1)
+    sigma_per_t = data.std(axis=1, ddof=1).clip(min=1e-8)
+    data_norm = (data - mu_per_t[:, np.newaxis]) / sigma_per_t[:, np.newaxis]
     return data_norm, mu_per_t, sigma_per_t
 
 
