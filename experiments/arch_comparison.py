@@ -197,3 +197,102 @@ def run_one_block(arch_name, returns_train, returns_test, cfg, n_runs, horizons)
             results[(h, f'rank_ic_{bench_name}')] = compute_spearman_rho(bench_pred, real_cum)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Aggregation and output
+# ---------------------------------------------------------------------------
+
+def aggregate_results(block_results, horizons):
+    """Compute mean, std, ICIR, and mean benchmark metrics across OOS blocks.
+
+    block_results: list of dicts, each from run_one_block
+    horizons: list of ints
+    Returns dict {(horizon, stat_name): float}
+    """
+    agg = {}
+    for h in horizons:
+        rho_vals  = np.array([r[(h, 'rank_ic')]        for r in block_results])
+        topk_vals = np.array([r[(h, 'topk_precision')] for r in block_results])
+        hit_vals  = np.array([r[(h, 'hit_rate')]        for r in block_results])
+
+        agg[(h, 'mean_rank_ic')]  = float(np.nanmean(rho_vals))
+        agg[(h, 'std_rank_ic')]   = (float(np.nanstd(rho_vals, ddof=1))
+                                     if np.sum(~np.isnan(rho_vals)) > 1 else 0.0)
+        agg[(h, 'icir')]          = compute_icir(rho_vals[~np.isnan(rho_vals)])
+        agg[(h, 'mean_topk_precision')] = float(np.nanmean(topk_vals))
+        agg[(h, 'std_topk_precision')]  = (float(np.nanstd(topk_vals, ddof=1))
+                                           if np.sum(~np.isnan(topk_vals)) > 1 else 0.0)
+        agg[(h, 'mean_hit_rate')] = float(np.nanmean(hit_vals))
+        agg[(h, 'std_hit_rate')]  = (float(np.nanstd(hit_vals, ddof=1))
+                                     if np.sum(~np.isnan(hit_vals)) > 1 else 0.0)
+
+        for bench in ('B1_zero', 'B2_momentum', 'B3_persistence', 'B4_mean_rev'):
+            bench_rhos = np.array([r[(h, f'rank_ic_{bench}')] for r in block_results])
+            agg[(h, f'mean_rank_ic_{bench}')] = float(np.nanmean(bench_rhos))
+
+    return agg
+
+
+def write_outputs(results_by_arch_seed, horizons, out_dir):
+    """Write 4 output files summarising the architecture comparison.
+
+    results_by_arch_seed: dict {(arch_name, seed): aggregate_results(...) dict}
+    horizons: list of ints
+    out_dir: directory (created if absent)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    rank_ic_rows, topk_rows, hit_rows = [], [], []
+    for (arch, seed), agg in sorted(results_by_arch_seed.items()):
+        for h in horizons:
+            rank_ic_rows.append({
+                'arch': arch, 'seed': seed, 'horizon': h,
+                'mean_rank_ic': agg[(h, 'mean_rank_ic')],
+                'std_rank_ic':  agg[(h, 'std_rank_ic')],
+                'icir':         agg[(h, 'icir')],
+                'mean_rank_ic_B1_zero':        agg[(h, 'mean_rank_ic_B1_zero')],
+                'mean_rank_ic_B2_momentum':    agg[(h, 'mean_rank_ic_B2_momentum')],
+                'mean_rank_ic_B3_persistence': agg[(h, 'mean_rank_ic_B3_persistence')],
+                'mean_rank_ic_B4_mean_rev':    agg[(h, 'mean_rank_ic_B4_mean_rev')],
+            })
+            topk_rows.append({
+                'arch': arch, 'seed': seed, 'horizon': h,
+                'mean_topk_precision': agg[(h, 'mean_topk_precision')],
+                'std_topk_precision':  agg[(h, 'std_topk_precision')],
+            })
+            hit_rows.append({
+                'arch': arch, 'seed': seed, 'horizon': h,
+                'mean_hit_rate': agg[(h, 'mean_hit_rate')],
+                'std_hit_rate':  agg[(h, 'std_hit_rate')],
+            })
+
+    pd.DataFrame(rank_ic_rows).to_csv(os.path.join(out_dir, 'rank_ic.csv'), index=False)
+    pd.DataFrame(topk_rows).to_csv(os.path.join(out_dir, 'topk_precision.csv'), index=False)
+    pd.DataFrame(hit_rows).to_csv(os.path.join(out_dir, 'hit_rate.csv'), index=False)
+
+    # Summary text
+    df_ic = pd.DataFrame(rank_ic_rows)
+    lines = [
+        "Transformer Architecture Comparison — Forecast Quality Study",
+        f"Horizons: {horizons} weeks | Top-k: {TOP_K} | "
+        f"n_runs: {N_RUNS} | n_blocks: {N_BLOCKS} | seeds: {N_SEEDS}",
+        "",
+        "=== Mean Rank IC (Spearman rho) | mean +/- std [ICIR] ===",
+    ]
+    for h in horizons:
+        lines.append(f"\n  Horizon {h:2d} weeks:")
+        sub = df_ic[df_ic['horizon'] == h].sort_values('arch')
+        for _, row in sub.iterrows():
+            lines.append(
+                f"    {row['arch']:<20s} seed={row['seed']:3d}: "
+                f"{row['mean_rank_ic']:+.4f} +/- {row['std_rank_ic']:.4f}  "
+                f"ICIR={row['icir']:.2f}"
+            )
+        lines.append(f"  Benchmarks at h={h}:")
+        bench_row = sub.iloc[0]
+        for bench in ('B1_zero', 'B2_momentum', 'B3_persistence', 'B4_mean_rev'):
+            lines.append(f"    {bench:<22s}: {bench_row[f'mean_rank_ic_{bench}']:+.4f}")
+
+    with open(os.path.join(out_dir, 'arch_comparison_summary.txt'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')

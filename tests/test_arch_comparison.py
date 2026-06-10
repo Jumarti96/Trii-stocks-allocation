@@ -184,3 +184,75 @@ def test_run_one_block_current_smoke():
     assert -1.0 <= result[(4, 'rank_ic')] <= 1.0
     assert  0.0 <= result[(4, 'topk_precision')] <= 1.0
     assert  0.0 <= result[(4, 'hit_rate')] <= 1.0
+
+
+import tempfile
+from arch_comparison import aggregate_results, write_outputs
+
+
+def _stub_block_results(rho_vals, horizons=None):
+    """Return a list of per-block result dicts with controlled rank_ic values."""
+    if horizons is None:
+        horizons = [4]
+    blocks = []
+    for rho in rho_vals:
+        r = {}
+        for h in horizons:
+            r[(h, 'rank_ic')]        = rho
+            r[(h, 'topk_precision')] = 0.5
+            r[(h, 'hit_rate')]       = 0.5
+            r[(h, 'rank_ic_B1_zero')]        = 0.0
+            r[(h, 'rank_ic_B2_momentum')]    = 0.1
+            r[(h, 'rank_ic_B3_persistence')] = 0.05
+            r[(h, 'rank_ic_B4_mean_rev')]    = -0.05
+        blocks.append(r)
+    return blocks
+
+
+def test_aggregate_results_mean_rank_ic():
+    block_results = _stub_block_results([0.1, 0.2, 0.3])
+    agg = aggregate_results(block_results, horizons=[4])
+    assert agg[(4, 'mean_rank_ic')] == pytest.approx(0.2)
+
+
+def test_aggregate_results_std_rank_ic():
+    block_results = _stub_block_results([0.1, 0.2, 0.3])
+    agg = aggregate_results(block_results, horizons=[4])
+    expected_std = np.array([0.1, 0.2, 0.3]).std(ddof=1)
+    assert agg[(4, 'std_rank_ic')] == pytest.approx(expected_std)
+
+
+def test_aggregate_results_icir():
+    rho_vals = [0.1, 0.2, 0.3]
+    block_results = _stub_block_results(rho_vals)
+    agg = aggregate_results(block_results, horizons=[4])
+    expected_icir = np.mean(rho_vals) / np.std(rho_vals, ddof=1)
+    assert agg[(4, 'icir')] == pytest.approx(expected_icir)
+
+
+def test_write_outputs_creates_all_files():
+    # Build minimal multi-arch, multi-seed results structure
+    block_results = _stub_block_results([0.1, 0.2])
+    agg = aggregate_results(block_results, horizons=[4])
+    results = {
+        ('A_surgical', 0): agg,
+        ('current',    0): agg,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(results, horizons=[4], out_dir=tmp)
+        files = set(os.listdir(tmp))
+    assert 'rank_ic.csv'           in files
+    assert 'topk_precision.csv'    in files
+    assert 'hit_rate.csv'          in files
+    assert 'arch_comparison_summary.txt' in files
+
+
+def test_write_outputs_rank_ic_columns():
+    block_results = _stub_block_results([0.1, 0.2])
+    agg = aggregate_results(block_results, horizons=[4])
+    results = {('A_surgical', 0): agg}
+    with tempfile.TemporaryDirectory() as tmp:
+        write_outputs(results, horizons=[4], out_dir=tmp)
+        df = pd.read_csv(os.path.join(tmp, 'rank_ic.csv'))
+    assert set(df.columns) >= {'arch', 'seed', 'horizon',
+                                'mean_rank_ic', 'std_rank_ic', 'icir'}
