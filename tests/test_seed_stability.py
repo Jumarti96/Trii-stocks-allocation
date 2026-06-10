@@ -8,6 +8,8 @@ from seed_stability import (
     compute_mu_per_run,
     compute_topk_sets,
     compute_pairwise_overlaps,
+    compute_stock_frequencies,
+    compute_core_sets,
 )
 
 
@@ -99,3 +101,41 @@ def test_compute_pairwise_overlaps_partial():
     assert mean == pytest.approx(0.5)
     assert std == pytest.approx(0.0)
     assert mn == pytest.approx(0.5)
+
+
+def test_compute_stock_frequencies_shape():
+    n_stocks = 5
+    seeds = [
+        {(3, 2): frozenset([0, 1])},
+        {(3, 2): frozenset([0, 2])},
+    ]
+    freq = compute_stock_frequencies(seeds, n_stocks, n_arms=[3], thresholds=[2])
+    assert freq[(3, 2)].shape == (n_stocks,)
+
+
+def test_compute_stock_frequencies_values():
+    n_stocks = 5
+    seeds = [
+        {(3, 2): frozenset([0, 1])},
+        {(3, 2): frozenset([0, 1])},
+        {(3, 2): frozenset([0, 2])},
+    ]
+    freq = compute_stock_frequencies(seeds, n_stocks, n_arms=[3], thresholds=[2])
+    counts = freq[(3, 2)]
+    assert counts[0] == 3
+    assert counts[1] == 2
+    assert counts[2] == 1
+    assert counts[3] == 0
+    assert counts[4] == 0
+
+
+def test_compute_core_sets_values():
+    # stock 0: count=3, stock 1: count=2, stock 2: count=1
+    freq = {(3, 2): np.array([3, 2, 1, 0, 0])}
+    result = compute_core_sets(freq, n_seeds=3)
+    # 100%: ceil(1.0*3)=3 -> stock 0 only -> 1
+    assert result[(3, 2, 1.0)] == 1
+    # 80%: ceil(0.8*3)=ceil(2.4)=3 -> stock 0 only -> 1
+    assert result[(3, 2, 0.8)] == 1
+    # 60%: ceil(0.6*3)=ceil(1.8)=2 -> stocks 0 and 1 -> 2
+    assert result[(3, 2, 0.6)] == 2

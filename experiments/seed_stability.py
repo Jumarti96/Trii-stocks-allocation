@@ -82,3 +82,33 @@ def compute_pairwise_overlaps(topk_sets_per_seed):
         result[key] = (float(arr.mean()), float(arr.std(ddof=ddof)),
                        float(arr.min()), float(arr.max()))
     return result
+
+
+def compute_stock_frequencies(topk_sets_per_seed, n_stocks, n_arms, thresholds):
+    """Count how many seeds place each stock in top-k.
+
+    Returns dict[(n, k)] -> ndarray of shape (n_stocks,) with integer counts
+    """
+    result = {}
+    for n in n_arms:
+        for k in thresholds:
+            counts = np.zeros(n_stocks, dtype=int)
+            for seed_sets in topk_sets_per_seed:
+                for idx in seed_sets[(n, k)]:
+                    counts[idx] += 1
+            result[(n, k)] = counts
+    return result
+
+
+def compute_core_sets(freq_dict, n_seeds):
+    """Core set size at 60%, 80%, 100% frequency thresholds.
+
+    freq_dict: dict[(n, k)] -> ndarray of stock counts
+    Returns dict[(n, k, pct)] -> int
+    """
+    result = {}
+    for (n, k), counts in freq_dict.items():
+        for pct in _CORE_PCTS:
+            min_count = int(np.ceil(pct * n_seeds))
+            result[(n, k, pct)] = int((counts >= min_count).sum())
+    return result
