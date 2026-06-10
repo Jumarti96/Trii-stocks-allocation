@@ -82,10 +82,13 @@ ARCH_DECODE_STEPS = {
     'B_12':             12,
     'B_24':             24,
     'B_54':             54,
+    'B_24_rev':         24,
+    'current_rev':      None,
     'C_crosssectional': 1,
 }
 
-_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_12', 'B_24', 'B_54'}
+_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_12', 'B_24', 'B_54', 'B_24_rev'}
+_REV_ARCHS            = {'B_24_rev', 'current_rev'}
 _CROSSSECTIONAL_ARCHS = {'C_crosssectional'}
 
 
@@ -128,23 +131,24 @@ class TransformerModelSurgical(nn.Module):
         return x
 
 
-def build_arch(arch_name, input_shape, decode_steps=None):
+def build_arch(arch_name, input_shape, decode_steps=None, n_outputs=None):
     """Factory: return the correct model instance for arch_name.
 
     arch_name:    one of ARCH_DECODE_STEPS keys
     input_shape:  (seq_len, n_features)
     decode_steps: explicit override (required for generic 'B'); falls back to
                   ARCH_DECODE_STEPS[arch_name] when None.
+    n_outputs:    explicit output size override (used by rev archs with 2*n_stocks input).
     """
     if arch_name not in ARCH_DECODE_STEPS:
         raise ValueError(f"Unknown architecture: '{arch_name}'. "
                          f"Valid options: {sorted(ARCH_DECODE_STEPS)}")
-    if arch_name == 'current':
-        return TransformerModel(input_shape)
+    if arch_name in ('current', 'current_rev'):
+        return TransformerModel(input_shape, n_outputs=n_outputs)
     steps = decode_steps if decode_steps is not None else ARCH_DECODE_STEPS[arch_name]
     if steps is None:
         raise ValueError(f"arch '{arch_name}' requires decode_steps to be supplied")
-    return TransformerModelSurgical(input_shape, decode_steps=steps)
+    return TransformerModelSurgical(input_shape, decode_steps=steps, n_outputs=n_outputs)
 
 
 def create_dataset(data, time_window):
@@ -296,15 +300,26 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         data, mu_cs, sigma_cs = _normalise_crosssectional(returns_df)
         mu_last    = mu_cs[-1]
         sigma_last = sigma_cs[-1]
+        x_data, y_data = data, data
+    elif arch in _REV_ARCHS:
+        data, mu, sigma = _normalise(returns_df)
+        x_data = _add_reversal_channel(data)   # (n, 2*n_stocks)
+        y_data = data                          # predict raw returns only
     else:
         data, mu, sigma = _normalise(returns_df)
+        x_data, y_data = data, data
+
+    n_outputs = returns_df.shape[1] if arch in _REV_ARCHS else None
 
     # --- Dataset ---
     if arch in _MULTISTEP_ARCHS:
         decode_steps = ARCH_DECODE_STEPS[arch]
         if decode_steps is None:                      # generic 'B'
             decode_steps = cfg['transformer_forecast_window']
-        X, Y = create_dataset_multistep(data, time_window, decode_steps)
+        if arch in _REV_ARCHS:
+            X, Y = create_dataset_xy_multistep(x_data, y_data, time_window, decode_steps)
+        else:
+            X, Y = create_dataset_multistep(data, time_window, decode_steps)
     else:
         decode_steps = None
         X, Y = create_dataset(data, time_window)
@@ -317,7 +332,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
     dataset  = TensorDataset(X_tensor, Y_tensor)
 
     # Prediction window: last time_window samples
-    data_preds = np.concatenate((data, np.expand_dims(np.zeros_like(data[-1]), axis=0)))
+    data_preds = np.concatenate((x_data, np.expand_dims(np.zeros_like(x_data[-1]), axis=0)))
     X_pred, _  = create_dataset(data_preds, time_window)
     last_window = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -327,7 +342,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
             print(f"  Training run {run + 1}/{n_runs}...")
 
         model      = build_arch(arch, input_shape=(time_window, X.shape[2]),
-                               decode_steps=decode_steps).to(device)
+                               decode_steps=decode_steps, n_outputs=n_outputs).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
         criterion  = nn.MSELoss() if arch == 'current' else nn.HuberLoss(delta=1.0)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)

@@ -408,3 +408,11 @@ def test_surgical_n_outputs_defaults_to_num_features():
     model = TransformerModelSurgical(input_shape=(10, 5), decode_steps=2)
     out = model(torch.randn(2, 10, 5))
     assert out.shape == (2, 2, 5)
+
+
+def test_train_runs_B_24_rev_shape_and_scale():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(11, n_stocks=5, n_periods=60)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B_24_rev')
+    assert runs.shape == (1, 24, 5)     # decode_steps=24, output = n_stocks
+    assert runs.std() < 0.5             # denormalised to return scale, not ~1.0
