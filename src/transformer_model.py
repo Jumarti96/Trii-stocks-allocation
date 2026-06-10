@@ -378,13 +378,13 @@ def _denormalise_crosssectional(preds_arr, mu_last, sigma_last):
     return preds_arr * sigma_last + mu_last
 
 
-def train_and_predict(returns_df, cfg, n_runs=None, verbose=True):
+def train_and_predict(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
     """Train n_runs Transformers on returns_df and return averaged, winsorised forecasts.
 
     Pure with respect to the filesystem: no reads/writes, no date handling. The caller
     supplies returns_df (rows = periods, columns = stocks) and assigns dates to the result.
     """
-    runs = train_runs(returns_df, cfg, n_runs=n_runs, verbose=verbose)
+    runs = train_runs(returns_df, cfg, n_runs=n_runs, verbose=verbose, arch=arch)
     if verbose:
         print(f"Predictions averaged across {runs.shape[0]} runs.")
     preds_df = pd.DataFrame(runs.mean(axis=0), columns=returns_df.columns)

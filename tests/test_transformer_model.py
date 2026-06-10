@@ -303,6 +303,7 @@ def test_train_runs_arch_A_surgical_shape():
 
 def test_train_runs_arch_B_4_shape():
     cfg = _tiny_arch_cfg()
+    cfg['periods_to_forecast'] = 2        # deliberately different from decode_steps=4
     rets = _tiny_rets_arch(1)
     runs = train_runs(rets, cfg, n_runs=2, verbose=False, arch='B_4')
     # B_4: decode_steps=4 regardless of cfg['periods_to_forecast']
