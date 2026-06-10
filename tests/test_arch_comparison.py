@@ -126,3 +126,61 @@ def test_predict_mean_reversion_sign():
     result = predict_mean_reversion(window)
     assert result[0] < 0   # above cross-section → predict downward
     assert result[3] > 0   # below cross-section → predict upward
+
+
+from arch_comparison import run_one_block
+from config import load_config
+
+
+def _tiny_run_cfg():
+    cfg = load_config()
+    cfg['time_window']             = 8
+    cfg['periods_to_forecast']     = 4
+    cfg['transformer_epochs']      = 1
+    cfg['transformer_warmup_epochs'] = 0
+    return cfg
+
+
+def _tiny_rets_df(seed, n_stocks=6, n_periods=40):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        rng.normal(0, 0.02, (n_periods, n_stocks)),
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+
+
+def test_run_one_block_returns_expected_keys():
+    cfg   = _tiny_run_cfg()
+    rets  = _tiny_rets_df(0)
+    train = rets.iloc[:-10]
+    test  = rets.iloc[-10:]
+    result = run_one_block('A_surgical', train, test, cfg, n_runs=1, horizons=[4])
+    assert (4, 'rank_ic') in result
+    assert (4, 'topk_precision') in result
+    assert (4, 'hit_rate') in result
+    # benchmark keys
+    assert (4, 'rank_ic_B2_momentum') in result
+
+
+def test_run_one_block_B4_unsupported_horizon_is_nan():
+    cfg   = _tiny_run_cfg()
+    rets  = _tiny_rets_df(1)
+    train = rets.iloc[:-10]
+    test  = rets.iloc[-10:]
+    result = run_one_block('B_4', train, test, cfg, n_runs=1, horizons=[4, 24])
+    # horizon 4 should be valid
+    assert not np.isnan(result[(4, 'rank_ic')])
+    # horizon 24 is beyond B_4's 4-step output
+    assert np.isnan(result[(24, 'rank_ic')])
+
+
+def test_run_one_block_current_smoke():
+    cfg   = _tiny_run_cfg()
+    rets  = _tiny_rets_df(2)
+    train = rets.iloc[:-10]
+    test  = rets.iloc[-10:]
+    result = run_one_block('current', train, test, cfg, n_runs=1, horizons=[4])
+    # result values should be finite floats in valid metric ranges
+    assert -1.0 <= result[(4, 'rank_ic')] <= 1.0
+    assert  0.0 <= result[(4, 'topk_precision')] <= 1.0
+    assert  0.0 <= result[(4, 'hit_rate')] <= 1.0

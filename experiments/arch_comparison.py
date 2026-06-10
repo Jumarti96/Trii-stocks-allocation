@@ -124,3 +124,76 @@ def predict_mean_reversion(returns_window):
     """B4: negative of last period's cross-sectional deviation."""
     last = returns_window[-1]
     return -(last - last.mean())
+
+
+# ---------------------------------------------------------------------------
+# Core evaluation block
+# ---------------------------------------------------------------------------
+
+_BENCHMARKS = [
+    ('B1_zero',        lambda w: predict_zero(w.shape[1])),
+    ('B2_momentum',    lambda w: predict_momentum(w)),
+    ('B3_persistence', lambda w: predict_persistence(w)),
+    ('B4_mean_rev',    lambda w: predict_mean_reversion(w)),
+]
+
+
+def run_one_block(arch_name, returns_train, returns_test, cfg, n_runs, horizons):
+    """Train arch_name on returns_train; evaluate at each horizon vs returns_test.
+
+    returns_train: DataFrame (n_train_periods, n_stocks)
+    returns_test:  DataFrame (at least max(horizons) rows, n_stocks)
+    cfg:           config dict; periods_to_forecast is overridden internally
+    n_runs:        number of transformer runs to average
+    horizons:      list of ints e.g. [4, 24, 54]
+
+    Returns dict {(horizon, metric_name): float}
+    Unsupported (arch, horizon) pairs -> NaN for all metrics.
+    metric_names: 'rank_ic', 'topk_precision', 'hit_rate',
+                  'rank_ic_B1_zero', 'rank_ic_B2_momentum',
+                  'rank_ic_B3_persistence', 'rank_ic_B4_mean_rev'
+    """
+    arch_max    = _ARCH_MAX_HORIZON[arch_name]
+    max_h       = max(horizons)
+    time_window = cfg['time_window']
+
+    # Set periods_to_forecast to max horizon for autoregressive archs
+    cfg_run = {**cfg, 'periods_to_forecast': max_h}
+
+    # Train
+    preds_3d   = train_runs(returns_train, cfg_run, n_runs=n_runs,
+                             verbose=False, arch=arch_name)
+    preds_mean = preds_3d.mean(axis=0)   # (steps, n_stocks)
+
+    # Last training window for benchmarks
+    returns_window = returns_train.values[-time_window:]   # (time_window, n_stocks)
+
+    results = {}
+    for h in horizons:
+        # Check arch support
+        if arch_max is not None and h > arch_max:
+            for key in ('rank_ic', 'topk_precision', 'hit_rate',
+                        'rank_ic_B1_zero', 'rank_ic_B2_momentum',
+                        'rank_ic_B3_persistence', 'rank_ic_B4_mean_rev'):
+                results[(h, key)] = float('nan')
+            continue
+
+        if preds_mean.shape[0] < h:
+            for key in ('rank_ic', 'topk_precision', 'hit_rate',
+                        'rank_ic_B1_zero', 'rank_ic_B2_momentum',
+                        'rank_ic_B3_persistence', 'rank_ic_B4_mean_rev'):
+                results[(h, key)] = float('nan')
+            continue
+
+        pred_cum = preds_mean[:h].sum(axis=0)           # (n_stocks,)
+        real_cum = returns_test.values[:h].sum(axis=0)  # (n_stocks,)
+
+        results[(h, 'rank_ic')]        = compute_spearman_rho(pred_cum, real_cum)
+        results[(h, 'topk_precision')] = compute_topk_precision(pred_cum, real_cum, k=TOP_K)
+        results[(h, 'hit_rate')]       = compute_hit_rate(pred_cum, real_cum)
+
+        for bench_name, bench_fn in _BENCHMARKS:
+            bench_pred = bench_fn(returns_window)
+            results[(h, f'rank_ic_{bench_name}')] = compute_spearman_rho(bench_pred, real_cum)
+
+    return results
