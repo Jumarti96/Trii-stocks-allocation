@@ -251,3 +251,74 @@ def test_build_arch_unknown_raises():
     from transformer_model import build_arch
     with pytest.raises(ValueError, match="Unknown architecture"):
         build_arch('not_real', input_shape=(10, 5))
+
+
+from transformer_model import create_dataset_multistep
+
+
+def _tiny_arch_cfg():
+    return {
+        "time_window": 8,
+        "periods_to_forecast": 4,
+        "n_transformer_runs": 1,
+        "transformer_epochs": 1,
+        "transformer_warmup_epochs": 0,
+        "transformer_lr": 1e-4,
+        "transformer_batch_size": 32,
+    }
+
+
+def _tiny_rets_arch(seed, n_stocks=5, n_periods=40):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        rng.normal(0, 0.02, (n_periods, n_stocks)),
+        columns=[f"S{i}" for i in range(n_stocks)],
+    )
+
+
+def test_create_dataset_multistep_shapes():
+    data = np.random.default_rng(0).normal(0, 1, (50, 4))
+    X, Y = create_dataset_multistep(data, time_window=10, decode_steps=3)
+    # n_samples = 50 - 10 - 3 + 1 = 38
+    assert X.shape == (38, 10, 4)
+    assert Y.shape == (38, 3, 4)
+
+
+def test_create_dataset_multistep_continuity():
+    # Y[i] should be the decode_steps rows immediately after X[i]
+    data = np.arange(30).reshape(30, 1).astype(float)
+    X, Y = create_dataset_multistep(data, time_window=5, decode_steps=2)
+    # Sample 0: X = rows 0-4, Y = rows 5-6
+    np.testing.assert_array_equal(X[0, :, 0], np.arange(5))
+    np.testing.assert_array_equal(Y[0, :, 0], [5.0, 6.0])
+
+
+def test_train_runs_arch_A_surgical_shape():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(0)
+    runs = train_runs(rets, cfg, n_runs=2, verbose=False, arch='A_surgical')
+    # (n_runs, periods_to_forecast, n_stocks)
+    assert runs.shape == (2, cfg['periods_to_forecast'], rets.shape[1])
+
+
+def test_train_runs_arch_B_4_shape():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(1)
+    runs = train_runs(rets, cfg, n_runs=2, verbose=False, arch='B_4')
+    # B_4: decode_steps=4 regardless of cfg['periods_to_forecast']
+    assert runs.shape == (2, 4, rets.shape[1])
+
+
+def test_train_runs_arch_C_crosssectional_shape():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(2)
+    runs = train_runs(rets, cfg, n_runs=2, verbose=False, arch='C_crosssectional')
+    assert runs.shape == (2, cfg['periods_to_forecast'], rets.shape[1])
+
+
+def test_train_runs_default_arch_unchanged():
+    # arch='current' (default) must return same shape as the original API
+    cfg = _tiny_cfg()
+    rets = _tiny_rets_arch(3, n_stocks=3, n_periods=30)
+    runs = train_runs(rets, cfg, n_runs=2, verbose=False)
+    assert runs.shape == (2, cfg['periods_to_forecast'], 3)

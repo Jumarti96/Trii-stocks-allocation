@@ -145,6 +145,55 @@ def create_dataset(data, time_window):
     return np.array(X), np.array(Y)
 
 
+def create_dataset_multistep(data, time_window, decode_steps):
+    """Create X, Y arrays for direct multi-step prediction.
+
+    X: (n_samples, time_window, n_stocks)
+    Y: (n_samples, decode_steps, n_stocks)  — the next decode_steps rows after each window
+    """
+    X, Y = [], []
+    n_samples = len(data) - time_window - decode_steps + 1
+    for i in range(n_samples):
+        X.append(data[i:(i + time_window)])
+        Y.append(data[(i + time_window):(i + time_window + decode_steps)])
+    return np.array(X), np.array(Y)
+
+
+def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
+    """Autoregressively decode periods_to_forecast steps from last_window.
+
+    last_window: tensor (1, time_window, n_stocks) on device
+    Returns ndarray (periods_to_forecast, n_stocks) in normalised space.
+    """
+    run_preds = []
+    pred_inputs = last_window.clone()
+    with torch.no_grad():
+        for _ in range(periods_to_forecast):
+            if use_amp:
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    pred = model(pred_inputs)
+            else:
+                pred = model(pred_inputs)
+            run_preds.append(pred[0].cpu().numpy())
+            pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
+    return np.array(run_preds)
+
+
+def _multistep_predict(model, last_window, use_amp):
+    """Single forward pass for B_4 / B_24: returns all decode_steps at once.
+
+    last_window: tensor (1, time_window, n_stocks) on device
+    Returns ndarray (decode_steps, n_stocks) in normalised space.
+    """
+    with torch.no_grad():
+        if use_amp:
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                pred = model(last_window)
+        else:
+            pred = model(last_window)
+    return pred[0].cpu().numpy()
+
+
 def weighted_mean_return(preds_df, lambda_=0.2):
     """Exponential-decay-weighted mean of the per-period predicted returns, per column.
 
@@ -180,12 +229,12 @@ def annualize_expected_returns(preds_df, periods_per_year, lambda_=0.2):
     return annualize_period_return(wmr, periods_per_year)
 
 
-def train_runs(returns_df, cfg, n_runs=None, verbose=True):
-    """Train n_runs Transformers and return the raw per-run forecasts.
+def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
+    """Train n_runs models for the given architecture and return raw per-run forecasts.
 
-    Returns an np.ndarray of shape (n_runs, periods_to_forecast, n_stocks) — no
-    averaging, no winsorisation. train_and_predict composes averaging + winsorisation
-    on top; the convergence sweep averages prefixes of these runs.
+    arch: one of ARCH_DECODE_STEPS keys (default 'current' = existing behaviour).
+    Returns ndarray (n_runs, steps, n_stocks) where steps = periods_to_forecast for
+    autoregressive archs, or decode_steps for B_4 / B_24.
     """
     time_window         = cfg['time_window']
     periods_to_forecast = cfg['periods_to_forecast']
@@ -196,8 +245,21 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     if n_runs is None:
         n_runs = cfg['n_transformer_runs']
 
-    data, mu, sigma = _normalise(returns_df)
-    X, Y = create_dataset(data, time_window)
+    # --- Normalisation ---
+    if arch in _CROSSSECTIONAL_ARCHS:
+        data, mu_cs, sigma_cs = _normalise_crosssectional(returns_df)
+        mu_last    = mu_cs[-1]
+        sigma_last = sigma_cs[-1]
+    else:
+        data, mu, sigma = _normalise(returns_df)
+
+    # --- Dataset ---
+    if arch in _MULTISTEP_ARCHS:
+        decode_steps = ARCH_DECODE_STEPS[arch]
+        X, Y = create_dataset_multistep(data, time_window, decode_steps)
+    else:
+        X, Y = create_dataset(data, time_window)
+
     if verbose:
         print(f"Training shapes - X: {X.shape}, Y: {Y.shape}")
 
@@ -205,17 +267,19 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
     Y_tensor = torch.tensor(Y, dtype=torch.float32).to(device)
     dataset  = TensorDataset(X_tensor, Y_tensor)
 
-    # Prediction input: append a dummy row so create_dataset captures the last window
+    # Prediction window: last time_window samples
     data_preds = np.concatenate((data, np.expand_dims(np.zeros_like(data[-1]), axis=0)))
     X_pred, _  = create_dataset(data_preds, time_window)
+    last_window = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
 
     all_preds_runs = []
     for run in range(n_runs):
         if verbose:
             print(f"  Training run {run + 1}/{n_runs}...")
-        model      = TransformerModel(input_shape=(time_window, X.shape[2])).to(device)
+
+        model      = build_arch(arch, input_shape=(time_window, X.shape[2])).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
-        criterion  = nn.MSELoss()
+        criterion  = nn.MSELoss() if arch == 'current' else nn.HuberLoss(delta=1.0)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
@@ -223,7 +287,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
             optimizer, start_factor=0.1, end_factor=1.0, total_iters=n_warmup
         )
         cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=n_epochs - n_warmup, eta_min=1e-6
+            optimizer, T_max=max(1, n_epochs - n_warmup), eta_min=1e-6
         )
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[n_warmup]
@@ -248,20 +312,17 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True):
             scheduler.step()
 
         model.eval()
-        run_preds   = []
-        pred_inputs = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
+        if arch in _MULTISTEP_ARCHS:
+            run_preds = _multistep_predict(model, last_window, use_amp)
+        else:
+            run_preds = _autoregressive_decode(model, last_window, periods_to_forecast, use_amp)
 
-        with torch.no_grad():
-            for _ in range(periods_to_forecast):
-                if use_amp:
-                    with torch.cuda.amp.autocast(dtype=torch.float16):
-                        pred = model(pred_inputs)
-                else:
-                    pred = model(pred_inputs)
-                run_preds.append(pred[0].cpu().numpy())
-                pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
+        if arch in _CROSSSECTIONAL_ARCHS:
+            run_preds = _denormalise_crosssectional(run_preds, mu_last, sigma_last)
+        else:
+            run_preds = _denormalise(run_preds, mu, sigma)
 
-        all_preds_runs.append(_denormalise(np.array(run_preds), mu, sigma))
+        all_preds_runs.append(run_preds)
 
     return np.array(all_preds_runs)
 
