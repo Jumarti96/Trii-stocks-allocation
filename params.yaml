@@ -13,9 +13,7 @@ download_workers: 3             # parallel batch workers
 download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
 
 # Transformer model (Step 3)
-periods_to_forecast: 4        # Periods ahead to predict
-n_transformer_runs: 150       # Independent training runs; predictions are averaged
-time_window: null             # Input sequence length; null means derived as periods_per_year
+periods_to_forecast: 4        # How many periods ahead to predict. Suggested default: 4.
 
 # Portfolio optimisation (Step 4)
 allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)
@@ -33,6 +31,12 @@ investment_cop: 120000000     # Total capital available (COP)
 output_path: "results/allocation_output.csv"
 
 # Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
+
+# Transformer model internals — do not change without a deep understanding of the model.
+transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step). Default: B.
+transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
+n_transformer_runs: 150             # Independent training runs; predictions are averaged.
+time_window: null                   # Input sequence length; null -> periods_per_year.
 liquidity_window_fraction: 0.10       # lookback = last 10% of the time-series (proportional to download horizon)
 liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of the lookback window
 liquidity_topn: null                  # optional compute cap before the transformer step (null = off)

@@ -42,3 +42,13 @@ def test_guard_ignores_current_arch():
     cfg = _resolve_transformer_config(
         _base_cfg(transformer_arch='current', periods_to_forecast=4))
     assert cfg['transformer_arch'] == 'current'
+
+
+from config import load_config
+
+
+def test_real_params_load_with_B_arch():
+    cfg = load_config()
+    assert cfg['transformer_arch'] == 'B'
+    assert cfg['transformer_forecast_window'] == 24
+    assert cfg['transformer_forecast_window'] >= cfg['periods_to_forecast']
