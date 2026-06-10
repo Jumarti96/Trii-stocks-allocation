@@ -1,7 +1,6 @@
 import os
 import sys
 import numpy as np
-import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experiments"))
@@ -98,3 +97,5 @@ def test_compute_pairwise_overlaps_partial():
     result = compute_pairwise_overlaps(seeds)
     mean, std, mn, mx = result[(4, 4)]
     assert mean == pytest.approx(0.5)
+    assert std == pytest.approx(0.0)
+    assert mn == pytest.approx(0.5)
