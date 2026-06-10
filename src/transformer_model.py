@@ -77,11 +77,13 @@ ARCH_DECODE_STEPS = {
     'A_surgical':       1,
     'B':                None,   # generic: decode_steps resolved from cfg['transformer_forecast_window']
     'B_4':              4,
+    'B_12':             12,
     'B_24':             24,
+    'B_54':             54,
     'C_crosssectional': 1,
 }
 
-_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_24'}
+_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_12', 'B_24', 'B_54'}
 _CROSSSECTIONAL_ARCHS = {'C_crosssectional'}
 
 

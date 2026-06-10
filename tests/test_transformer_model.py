@@ -345,3 +345,13 @@ def test_train_runs_arch_B_uses_forecast_window():
     rets = _tiny_rets_arch(7)
     runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B')
     assert runs.shape == (1, 6, rets.shape[1])
+
+
+def test_build_arch_B_12_decode_steps():
+    from transformer_model import build_arch
+    assert build_arch('B_12', input_shape=(10, 5)).decode_steps == 12
+
+
+def test_build_arch_B_54_decode_steps():
+    from transformer_model import build_arch
+    assert build_arch('B_54', input_shape=(10, 5)).decode_steps == 54
