@@ -84,7 +84,8 @@ def compute_topk_precision(predicted, realized, k=150):
 def compute_hit_rate(predicted, realized):
     """Fraction of stocks where predicted and realized return directions match.
 
-    Stocks with zero predicted or realized return are counted as misses.
+    Denominator is always N (total stocks). Stocks with zero predicted or
+    realized return contribute 0 to the numerator (counted as misses).
     """
     pred_sign = np.sign(predicted)
     real_sign = np.sign(realized)

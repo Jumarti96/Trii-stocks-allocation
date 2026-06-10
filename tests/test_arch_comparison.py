@@ -35,10 +35,9 @@ def test_compute_spearman_rho_constant_returns_zero():
 
 
 def test_compute_icir_known_values():
-    # mean=0.2, std=0.1 (ddof=1 with 3 values: 0.1, 0.2, 0.3) → ICIR=2.0
+    # mean=0.2, std(ddof=1)=0.1 => ICIR = 2.0
     rho_series = np.array([0.1, 0.2, 0.3])
-    expected_icir = 0.2 / rho_series.std(ddof=1)
-    assert compute_icir(rho_series) == pytest.approx(expected_icir)
+    assert compute_icir(rho_series) == pytest.approx(2.0)
 
 
 def test_compute_icir_zero_std_returns_zero():
@@ -69,3 +68,18 @@ def test_compute_hit_rate_all_wrong():
     pred = np.array([1.0, -1.0, 2.0])
     real = np.array([-0.5, 0.5, -1.0])
     assert compute_hit_rate(pred, real) == pytest.approx(0.0)
+
+
+def test_compute_hit_rate_with_zeros_in_denominator():
+    # Zero predictions count as misses; denominator is always N
+    pred = np.array([1.0, 0.0, -1.0])   # middle stock: no direction
+    real = np.array([0.5, 0.5,  -0.5])
+    # matches: [True, False, True] → 2/3
+    assert compute_hit_rate(pred, real) == pytest.approx(2.0 / 3.0)
+
+
+def test_compute_spearman_rho_constant_realized_returns_zero():
+    # constant realized → no rank signal → 0.0 (symmetric guard)
+    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y = np.ones(5)
+    assert compute_spearman_rho(x, y) == pytest.approx(0.0)
