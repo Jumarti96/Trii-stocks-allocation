@@ -22,7 +22,7 @@ from scipy.stats import spearmanr
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pipeline"))
 
-from transformer_model import train_runs, build_arch, ARCH_DECODE_STEPS, _MULTISTEP_ARCHS
+from transformer_model import train_runs
 from config import load_config, PATHS
 
 # --- Experiment constants ---
@@ -345,6 +345,8 @@ def main():
         print(f"\n--- Seed {seed} ---")
         for arch in ARCHITECTURES:
             print(f"  Architecture: {arch}")
+            np.random.seed(seed)
+            torch.manual_seed(seed)
             block_results = []
             for block_idx in range(N_BLOCKS):
                 # Walk-forward split spaced 4 weeks apart.
@@ -355,9 +357,6 @@ def main():
 
                 if len(train) < time_window + 2 or len(test) < max(HORIZONS):
                     continue
-
-                np.random.seed(seed)
-                torch.manual_seed(seed)
 
                 block_results.append(
                     run_one_block(arch, train, test, cfg, N_RUNS, HORIZONS)
