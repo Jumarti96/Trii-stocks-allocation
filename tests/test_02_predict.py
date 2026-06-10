@@ -1,4 +1,6 @@
-"""Smoke test for pipeline/02_predict.py: B arch output is sliced to periods_to_forecast."""
+"""Smoke test for pipeline/02_predict.py: it passes the configured arch and slices
+the forecast to periods_to_forecast. train_and_predict is stubbed so the test is fast
+and genuinely discriminating (fails on code that ignores arch or skips the slice)."""
 import os
 import sys
 import importlib.util
@@ -19,7 +21,7 @@ def _load_script():
     return mod
 
 
-def test_step2_slices_B_output_to_periods_to_forecast(tmp_path, monkeypatch):
+def test_step2_passes_arch_and_slices_to_periods_to_forecast(tmp_path, monkeypatch):
     rng = np.random.default_rng(0)
     rets = pd.DataFrame(rng.normal(0, 0.02, (60, 4)),
                         columns=[f"S{i}" for i in range(4)],
@@ -32,10 +34,6 @@ def test_step2_slices_B_output_to_periods_to_forecast(tmp_path, monkeypatch):
     cfg['transformer_arch'] = 'B'
     cfg['transformer_forecast_window'] = 24
     cfg['periods_to_forecast'] = 4
-    cfg['time_window'] = 8
-    cfg['n_transformer_runs'] = 1
-    cfg['transformer_epochs'] = 1
-    cfg['transformer_warmup_epochs'] = 0
 
     paths = {
         '01_prices': str(tmp_path / "01_prices.csv"),
@@ -48,10 +46,24 @@ def test_step2_slices_B_output_to_periods_to_forecast(tmp_path, monkeypatch):
     prices.to_csv(paths['01_prices'])
     rets.to_csv(paths['01_returns'])
 
+    captured = {}
+
+    def fake_train_and_predict(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
+        # Record the arch the script passed, and emulate a direct multi-step head
+        # emitting transformer_forecast_window rows (e.g. 24).
+        captured['arch'] = arch
+        n_rows = cfg['transformer_forecast_window']
+        return pd.DataFrame(np.zeros((n_rows, returns_df.shape[1])),
+                            columns=returns_df.columns)
+
     monkeypatch.setattr(mod, "load_config", lambda: cfg)
     monkeypatch.setattr(mod, "PATHS", paths)
+    monkeypatch.setattr(mod, "train_and_predict", fake_train_and_predict)
 
     mod.main()
 
+    # 1. The script must forward the configured arch (old code passed none -> 'current').
+    assert captured['arch'] == 'B'
+    # 2. The 24-row head output must be sliced down to periods_to_forecast (=4).
     preds = pd.read_csv(paths['02_predictions'], index_col=0)
-    assert len(preds) == 4   # sliced from 24 down to periods_to_forecast
+    assert len(preds) == 4
