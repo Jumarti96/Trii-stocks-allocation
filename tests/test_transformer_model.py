@@ -323,3 +323,105 @@ def test_train_runs_default_arch_unchanged():
     rets = _tiny_rets_arch(3, n_stocks=3, n_periods=30)
     runs = train_runs(rets, cfg, n_runs=2, verbose=False)
     assert runs.shape == (2, cfg['periods_to_forecast'], 3)
+
+
+def test_build_arch_B_generic_uses_decode_steps_arg():
+    from transformer_model import build_arch, TransformerModelSurgical
+    model = build_arch('B', input_shape=(10, 5), decode_steps=24)
+    assert isinstance(model, TransformerModelSurgical)
+    assert model.decode_steps == 24
+
+
+def test_build_arch_B_generic_without_decode_steps_raises():
+    from transformer_model import build_arch
+    with pytest.raises(ValueError, match="requires decode_steps"):
+        build_arch('B', input_shape=(10, 5))
+
+
+def test_train_runs_arch_B_uses_forecast_window():
+    cfg = _tiny_arch_cfg()
+    cfg['transformer_forecast_window'] = 6   # generic B reads this
+    cfg['periods_to_forecast'] = 2           # must NOT drive B's output length
+    rets = _tiny_rets_arch(7)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B')
+    assert runs.shape == (1, 6, rets.shape[1])
+
+
+def test_build_arch_B_12_decode_steps():
+    from transformer_model import build_arch
+    assert build_arch('B_12', input_shape=(10, 5)).decode_steps == 12
+
+
+def test_build_arch_B_54_decode_steps():
+    from transformer_model import build_arch
+    assert build_arch('B_54', input_shape=(10, 5)).decode_steps == 54
+
+
+def test_add_reversal_channel_doubles_width_and_demeans():
+    from transformer_model import _add_reversal_channel
+    norm = np.array([[1.0, 3.0], [2.0, 4.0]])   # (2 periods, 2 stocks)
+    aug = _add_reversal_channel(norm)
+    assert aug.shape == (2, 4)                    # raw(2) + demeaned(2)
+    np.testing.assert_allclose(aug[:, :2], norm)  # first block = raw
+    # demeaned block: each row minus its cross-sectional mean
+    np.testing.assert_allclose(aug[:, 2:], norm - norm.mean(axis=1, keepdims=True))
+
+
+def test_create_dataset_xy_multistep_separate_channels():
+    from transformer_model import create_dataset_xy_multistep
+    x_data = np.arange(40).reshape(10, 4).astype(float)   # 4 input channels
+    y_data = np.arange(20).reshape(10, 2).astype(float)   # 2 output channels
+    X, Y = create_dataset_xy_multistep(x_data, y_data, time_window=5, decode_steps=2)
+    assert X.shape == (4, 5, 4)
+    assert Y.shape == (4, 2, 2)
+    np.testing.assert_array_equal(X[0, :, :], x_data[0:5])
+    np.testing.assert_array_equal(Y[0, :, :], y_data[5:7])
+
+
+def test_create_dataset_xy_singlestep_separate_channels():
+    from transformer_model import create_dataset_xy_singlestep
+    x_data = np.arange(40).reshape(10, 4).astype(float)
+    y_data = np.arange(20).reshape(10, 2).astype(float)
+    X, Y = create_dataset_xy_singlestep(x_data, y_data, time_window=5)
+    assert X.shape == (5, 5, 4)
+    assert Y.shape == (5, 2)
+    np.testing.assert_array_equal(Y[0], y_data[5])
+
+
+def test_surgical_n_outputs_decoupled_multistep():
+    from transformer_model import TransformerModelSurgical
+    # 8 input channels, 4 output stocks, decode_steps=3
+    model = TransformerModelSurgical(input_shape=(10, 8), decode_steps=3, n_outputs=4)
+    out = model(torch.randn(2, 10, 8))
+    assert out.shape == (2, 3, 4)
+
+
+def test_current_n_outputs_decoupled():
+    from transformer_model import TransformerModel
+    model = TransformerModel(input_shape=(10, 8), n_outputs=4)
+    out = model(torch.randn(2, 10, 8))
+    assert out.shape == (2, 4)
+
+
+def test_surgical_n_outputs_defaults_to_num_features():
+    from transformer_model import TransformerModelSurgical
+    model = TransformerModelSurgical(input_shape=(10, 5), decode_steps=2)
+    out = model(torch.randn(2, 10, 5))
+    assert out.shape == (2, 2, 5)
+
+
+def test_train_runs_B_24_rev_shape_and_scale():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(11, n_stocks=5, n_periods=60)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B_24_rev')
+    assert runs.shape == (1, 24, 5)     # decode_steps=24, output = n_stocks
+    assert runs.std() < 0.5             # denormalised to return scale, not ~1.0
+
+
+def test_train_runs_current_rev_shape_and_scale():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(12, n_stocks=5, n_periods=60)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='current_rev')
+    # autoregressive -> periods_to_forecast steps, output = n_stocks
+    assert runs.shape == (1, cfg['periods_to_forecast'], 5)
+    assert runs.std() < 0.5

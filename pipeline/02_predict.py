@@ -49,7 +49,9 @@ def main():
     periods_to_forecast = cfg['periods_to_forecast']
 
     # Train on the full universe and forecast every stock
-    preds_df = train_and_predict(rets, cfg)
+    arch = cfg.get('transformer_arch', 'current')
+    preds_df = train_and_predict(rets, cfg, arch=arch)
+    preds_df = preds_df.iloc[:periods_to_forecast]   # no-op for current; e.g. 24->4 for B
 
     # Build future date range and attach it to the predictions
     last_date    = pd.to_datetime(rets.index).max()

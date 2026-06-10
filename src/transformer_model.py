@@ -50,10 +50,12 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, input_shape, num_heads=8, ff_dim=512, num_blocks=6, dropout=0.1):
+    def __init__(self, input_shape, num_heads=8, ff_dim=512, num_blocks=6, dropout=0.1,
+                 n_outputs=None):
         super().__init__()
         seq_len, num_features = input_shape
         d_model = 128
+        n_outputs = n_outputs if n_outputs is not None else num_features
         self.input_proj = nn.Linear(num_features, d_model)
         self.pos_encoding = PositionalEncoding(seq_len, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -61,7 +63,7 @@ class TransformerModel(nn.Module):
             dropout=dropout, batch_first=True, norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
-        self.output_proj = nn.Linear(d_model, num_features)
+        self.output_proj = nn.Linear(d_model, n_outputs)
 
     def forward(self, x):
         x = self.input_proj(x)
@@ -75,12 +77,18 @@ class TransformerModel(nn.Module):
 ARCH_DECODE_STEPS = {
     'current':          None,
     'A_surgical':       1,
+    'B':                None,   # generic: decode_steps resolved from cfg['transformer_forecast_window']
     'B_4':              4,
+    'B_12':             12,
     'B_24':             24,
+    'B_54':             54,
+    'B_24_rev':         24,
+    'current_rev':      None,
     'C_crosssectional': 1,
 }
 
-_MULTISTEP_ARCHS      = {'B_4', 'B_24'}
+_MULTISTEP_ARCHS      = {'B', 'B_4', 'B_12', 'B_24', 'B_54', 'B_24_rev'}
+_REV_ARCHS            = {'B_24_rev', 'current_rev'}
 _CROSSSECTIONAL_ARCHS = {'C_crosssectional'}
 
 
@@ -96,12 +104,13 @@ class TransformerModelSurgical(nn.Module):
     decode_steps>1  → output (batch, decode_steps, n_features)  [direct multistep archs]
     """
     def __init__(self, input_shape, decode_steps=1, num_heads=4, ff_dim=512,
-                 num_blocks=3, dropout=0.1):
+                 num_blocks=3, dropout=0.1, n_outputs=None):
         super().__init__()
         seq_len, num_features = input_shape
         d_model = 128
         self.decode_steps = decode_steps
         self.num_features = num_features
+        self.n_outputs = n_outputs if n_outputs is not None else num_features
         self.input_proj = nn.Linear(num_features, d_model)
         self.pos_encoding = PositionalEncoding(seq_len, d_model)
         encoder_layer = nn.TransformerEncoderLayer(
@@ -109,7 +118,7 @@ class TransformerModelSurgical(nn.Module):
             dropout=dropout, batch_first=True, norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks)
-        self.output_proj = nn.Linear(d_model, num_features * decode_steps)
+        self.output_proj = nn.Linear(d_model, self.n_outputs * decode_steps)
 
     def forward(self, x):
         x = self.input_proj(x)
@@ -118,23 +127,28 @@ class TransformerModelSurgical(nn.Module):
         x = x[:, -1, :]                          # last-token pooling
         x = self.output_proj(x)
         if self.decode_steps > 1:
-            x = x.view(x.shape[0], self.decode_steps, self.num_features)
+            x = x.view(x.shape[0], self.decode_steps, self.n_outputs)
         return x
 
 
-def build_arch(arch_name, input_shape):
+def build_arch(arch_name, input_shape, decode_steps=None, n_outputs=None):
     """Factory: return the correct model instance for arch_name.
 
-    arch_name: one of ARCH_DECODE_STEPS keys
-    input_shape: (seq_len, n_features)
+    arch_name:    one of ARCH_DECODE_STEPS keys
+    input_shape:  (seq_len, n_features)
+    decode_steps: explicit override (required for generic 'B'); falls back to
+                  ARCH_DECODE_STEPS[arch_name] when None.
+    n_outputs:    explicit output size override (used by rev archs with 2*n_stocks input).
     """
     if arch_name not in ARCH_DECODE_STEPS:
         raise ValueError(f"Unknown architecture: '{arch_name}'. "
                          f"Valid options: {sorted(ARCH_DECODE_STEPS)}")
-    if arch_name == 'current':
-        return TransformerModel(input_shape)
-    decode_steps = ARCH_DECODE_STEPS[arch_name]
-    return TransformerModelSurgical(input_shape, decode_steps=decode_steps)
+    if arch_name in ('current', 'current_rev'):
+        return TransformerModel(input_shape, n_outputs=n_outputs)
+    steps = decode_steps if decode_steps is not None else ARCH_DECODE_STEPS[arch_name]
+    if steps is None:
+        raise ValueError(f"arch '{arch_name}' requires decode_steps to be supplied")
+    return TransformerModelSurgical(input_shape, decode_steps=steps, n_outputs=n_outputs)
 
 
 def create_dataset(data, time_window):
@@ -159,10 +173,48 @@ def create_dataset_multistep(data, time_window, decode_steps):
     return np.array(X), np.array(Y)
 
 
-def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
+def _add_reversal_channel(norm_data):
+    """Append the cross-sectional demean of per-stock-normalised returns as extra channels.
+
+    norm_data: ndarray (n_periods, n_stocks) already per-stock normalised.
+    Returns ndarray (n_periods, 2 * n_stocks): [raw_norm | raw_norm - cross_sectional_mean].
+    """
+    demeaned = norm_data - norm_data.mean(axis=1, keepdims=True)
+    return np.concatenate([norm_data, demeaned], axis=1)
+
+
+def create_dataset_xy_multistep(x_data, y_data, time_window, decode_steps):
+    """Direct multi-step windows with distinct input/target channel counts.
+
+    x_data: (n_periods, n_in)   y_data: (n_periods, n_out)
+    X: (n_samples, time_window, n_in)   Y: (n_samples, decode_steps, n_out)
+    """
+    X, Y = [], []
+    n_samples = len(x_data) - time_window - decode_steps + 1
+    for i in range(n_samples):
+        X.append(x_data[i:(i + time_window)])
+        Y.append(y_data[(i + time_window):(i + time_window + decode_steps)])
+    return np.array(X), np.array(Y)
+
+
+def create_dataset_xy_singlestep(x_data, y_data, time_window):
+    """Autoregressive (single-step) windows with distinct input/target channel counts.
+
+    X: (n_samples, time_window, n_in)   Y: (n_samples, n_out)
+    """
+    X, Y = [], []
+    for i in range(len(x_data) - time_window):
+        X.append(x_data[i:(i + time_window)])
+        Y.append(y_data[i + time_window])
+    return np.array(X), np.array(Y)
+
+
+def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp, rev=False):
     """Autoregressively decode periods_to_forecast steps from last_window.
 
-    last_window: tensor (1, time_window, n_stocks) on device
+    last_window: tensor (1, time_window, n_in) on device. For rev=True, n_in = 2*n_stocks
+                 (raw | cross-sectional demeaned) and the model emits n_stocks per step;
+                 the demeaned channel for the next input row is rebuilt from the prediction.
     Returns ndarray (periods_to_forecast, n_stocks) in normalised space.
     """
     run_preds = []
@@ -175,7 +227,12 @@ def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
             else:
                 pred = model(pred_inputs)
             run_preds.append(pred[0].cpu().numpy())
-            pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
+            if rev:
+                demeaned = pred - pred.mean(dim=1, keepdim=True)
+                next_row = torch.cat((pred, demeaned), dim=1)   # (1, 2*n_stocks)
+            else:
+                next_row = pred
+            pred_inputs = torch.cat((pred_inputs[:, 1:, :], next_row.unsqueeze(1)), dim=1)
     return np.array(run_preds)
 
 
@@ -250,15 +307,32 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         data, mu_cs, sigma_cs = _normalise_crosssectional(returns_df)
         mu_last    = mu_cs[-1]
         sigma_last = sigma_cs[-1]
+        x_data, y_data = data, data
+    elif arch in _REV_ARCHS:
+        data, mu, sigma = _normalise(returns_df)
+        x_data = _add_reversal_channel(data)   # (n, 2*n_stocks)
+        y_data = data                          # predict raw returns only
     else:
         data, mu, sigma = _normalise(returns_df)
+        x_data, y_data = data, data
+
+    n_outputs = returns_df.shape[1] if arch in _REV_ARCHS else None
 
     # --- Dataset ---
     if arch in _MULTISTEP_ARCHS:
         decode_steps = ARCH_DECODE_STEPS[arch]
-        X, Y = create_dataset_multistep(data, time_window, decode_steps)
+        if decode_steps is None:                      # generic 'B'
+            decode_steps = cfg['transformer_forecast_window']
+        if arch in _REV_ARCHS:
+            X, Y = create_dataset_xy_multistep(x_data, y_data, time_window, decode_steps)
+        else:
+            X, Y = create_dataset_multistep(data, time_window, decode_steps)
     else:
-        X, Y = create_dataset(data, time_window)
+        decode_steps = None
+        if arch in _REV_ARCHS:                       # current_rev: augmented X, raw Y
+            X, Y = create_dataset_xy_singlestep(x_data, y_data, time_window)
+        else:
+            X, Y = create_dataset(data, time_window)
 
     if verbose:
         print(f"Training shapes - X: {X.shape}, Y: {Y.shape}")
@@ -268,7 +342,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
     dataset  = TensorDataset(X_tensor, Y_tensor)
 
     # Prediction window: last time_window samples
-    data_preds = np.concatenate((data, np.expand_dims(np.zeros_like(data[-1]), axis=0)))
+    data_preds = np.concatenate((x_data, np.expand_dims(np.zeros_like(x_data[-1]), axis=0)))
     X_pred, _  = create_dataset(data_preds, time_window)
     last_window = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -277,9 +351,10 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         if verbose:
             print(f"  Training run {run + 1}/{n_runs}...")
 
-        model      = build_arch(arch, input_shape=(time_window, X.shape[2])).to(device)
+        model      = build_arch(arch, input_shape=(time_window, X.shape[2]),
+                               decode_steps=decode_steps, n_outputs=n_outputs).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
-        criterion  = nn.MSELoss() if arch == 'current' else nn.HuberLoss(delta=1.0)
+        criterion  = nn.MSELoss() if arch in ('current', 'current_rev') else nn.HuberLoss(delta=1.0)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
@@ -315,7 +390,9 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         if arch in _MULTISTEP_ARCHS:
             run_preds = _multistep_predict(model, last_window, use_amp)
         else:
-            run_preds = _autoregressive_decode(model, last_window, periods_to_forecast, use_amp)
+            run_preds = _autoregressive_decode(
+                model, last_window, periods_to_forecast, use_amp,
+                rev=(arch in _REV_ARCHS))
 
         if arch in _CROSSSECTIONAL_ARCHS:
             run_preds = _denormalise_crosssectional(run_preds, mu_last, sigma_last)
