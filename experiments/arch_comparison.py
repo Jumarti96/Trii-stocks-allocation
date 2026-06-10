@@ -109,7 +109,7 @@ def predict_momentum(returns_window, lambda_=0.2):
     Same decay convention as weighted_mean_return in transformer_model.py.
     """
     n_periods = returns_window.shape[0]
-    idx = np.arange(1, n_periods + 1)
+    idx = np.arange(n_periods, 0, -1)
     w   = np.exp(-lambda_ * idx)
     w  /= w.sum()
     return (returns_window * w[:, np.newaxis]).sum(axis=0)

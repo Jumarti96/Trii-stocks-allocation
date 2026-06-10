@@ -14,6 +14,10 @@ from arch_comparison import (
     compute_icir,
     compute_topk_precision,
     compute_hit_rate,
+    predict_zero,
+    predict_momentum,
+    predict_persistence,
+    predict_mean_reversion,
 )
 
 
@@ -85,12 +89,6 @@ def test_compute_spearman_rho_constant_realized_returns_zero():
     assert compute_spearman_rho(x, y) == pytest.approx(0.0)
 
 
-from arch_comparison import (
-    predict_zero,
-    predict_momentum,
-    predict_persistence,
-    predict_mean_reversion,
-)
 
 
 def test_predict_zero_shape_and_values():
@@ -105,14 +103,14 @@ def test_predict_momentum_shape():
     assert result.shape == (6,)
 
 
-def test_predict_momentum_ranking():
-    # Stock 0 has the highest returns throughout → highest predicted momentum
-    window = np.zeros((10, 4))
-    window[:, 0] = 0.05  # stock 0: consistently high
-    window[:, 3] = -0.05  # stock 3: consistently low
+def test_predict_momentum_weights_recency():
+    # Stock 0: spike only in most-recent row → should score highest (momentum)
+    # Stock 1: spike only in oldest row       → should score lowest
+    window = np.zeros((10, 2))
+    window[-1, 0] = 0.10   # newest row
+    window[ 0, 1] = 0.10   # oldest row
     result = predict_momentum(window)
-    assert result[0] == max(result)
-    assert result[3] == min(result)
+    assert result[0] > result[1], "recent spike must outweigh old spike"
 
 
 def test_predict_persistence_equals_last_row():
