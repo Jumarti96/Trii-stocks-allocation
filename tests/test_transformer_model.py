@@ -416,3 +416,12 @@ def test_train_runs_B_24_rev_shape_and_scale():
     runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B_24_rev')
     assert runs.shape == (1, 24, 5)     # decode_steps=24, output = n_stocks
     assert runs.std() < 0.5             # denormalised to return scale, not ~1.0
+
+
+def test_train_runs_current_rev_shape_and_scale():
+    cfg = _tiny_arch_cfg()
+    rets = _tiny_rets_arch(12, n_stocks=5, n_periods=60)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='current_rev')
+    # autoregressive -> periods_to_forecast steps, output = n_stocks
+    assert runs.shape == (1, cfg['periods_to_forecast'], 5)
+    assert runs.std() < 0.5

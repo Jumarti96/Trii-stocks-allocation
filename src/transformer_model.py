@@ -209,10 +209,12 @@ def create_dataset_xy_singlestep(x_data, y_data, time_window):
     return np.array(X), np.array(Y)
 
 
-def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
+def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp, rev=False):
     """Autoregressively decode periods_to_forecast steps from last_window.
 
-    last_window: tensor (1, time_window, n_stocks) on device
+    last_window: tensor (1, time_window, n_in) on device. For rev=True, n_in = 2*n_stocks
+                 (raw | cross-sectional demeaned) and the model emits n_stocks per step;
+                 the demeaned channel for the next input row is rebuilt from the prediction.
     Returns ndarray (periods_to_forecast, n_stocks) in normalised space.
     """
     run_preds = []
@@ -225,7 +227,12 @@ def _autoregressive_decode(model, last_window, periods_to_forecast, use_amp):
             else:
                 pred = model(pred_inputs)
             run_preds.append(pred[0].cpu().numpy())
-            pred_inputs = torch.cat((pred_inputs[:, 1:, :], pred.unsqueeze(1)), dim=1)
+            if rev:
+                demeaned = pred - pred.mean(dim=1, keepdim=True)
+                next_row = torch.cat((pred, demeaned), dim=1)   # (1, 2*n_stocks)
+            else:
+                next_row = pred
+            pred_inputs = torch.cat((pred_inputs[:, 1:, :], next_row.unsqueeze(1)), dim=1)
     return np.array(run_preds)
 
 
@@ -322,7 +329,10 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
             X, Y = create_dataset_multistep(data, time_window, decode_steps)
     else:
         decode_steps = None
-        X, Y = create_dataset(data, time_window)
+        if arch in _REV_ARCHS:                       # current_rev: augmented X, raw Y
+            X, Y = create_dataset_xy_singlestep(x_data, y_data, time_window)
+        else:
+            X, Y = create_dataset(data, time_window)
 
     if verbose:
         print(f"Training shapes - X: {X.shape}, Y: {Y.shape}")
@@ -344,7 +354,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         model      = build_arch(arch, input_shape=(time_window, X.shape[2]),
                                decode_steps=decode_steps, n_outputs=n_outputs).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
-        criterion  = nn.MSELoss() if arch == 'current' else nn.HuberLoss(delta=1.0)
+        criterion  = nn.MSELoss() if arch in ('current', 'current_rev') else nn.HuberLoss(delta=1.0)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
@@ -380,7 +390,9 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         if arch in _MULTISTEP_ARCHS:
             run_preds = _multistep_predict(model, last_window, use_amp)
         else:
-            run_preds = _autoregressive_decode(model, last_window, periods_to_forecast, use_amp)
+            run_preds = _autoregressive_decode(
+                model, last_window, periods_to_forecast, use_amp,
+                rev=(arch in _REV_ARCHS))
 
         if arch in _CROSSSECTIONAL_ARCHS:
             run_preds = _denormalise_crosssectional(run_preds, mu_last, sigma_last)
