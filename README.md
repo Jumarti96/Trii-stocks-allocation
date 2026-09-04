@@ -280,7 +280,17 @@ Trii Stocks allocation/
    pip install -r requirements.txt
    ```
 
-4. *(Recommended)* Install the GPU build of PyTorch for faster training — see [GPU Acceleration](#gpu-acceleration-strongly-recommended) above.
+4. **If you have an NVIDIA GPU — required.** Step 3 installs the CPU-only build of
+   PyTorch, which cannot use your GPU at all. Replace it:
+   ```bash
+   pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
+   ```
+   Substitute the `cuXXX` matching the CUDA version `nvidia-smi` reports. Then verify:
+   ```bash
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+   ```
+   A version ending in `+cpu`, or `False`, means the GPU is still unusable — see
+   [GPU Acceleration](#gpu-acceleration-strongly-recommended) above.
 
 5. *(Optional)* To use DCC-GARCH covariance estimation:
    ```bash
