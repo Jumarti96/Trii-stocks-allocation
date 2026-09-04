@@ -12,7 +12,19 @@ pmdarima>=2.0.4
 # Machine Learning and Deep Learning
 # PyTorch replaces TensorFlow
 scikit-learn>=1.5.2
+# WARNING: this line installs the CPU-ONLY build of torch on Windows, because plain
+# pip resolves torch from PyPI, which ships no CUDA wheels. A CPU-only build cannot
+# use an NVIDIA GPU at all (training is ~10x slower) and reports itself only as
+# "2.x.y+cpu" -- check with:
+#     python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# It is left unpinned here so macOS/Linux and GPU-less machines still install.
+# NVIDIA users MUST follow step 4 in the README Setup section afterwards:
+#     pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128
+# (substitute the cuXXX matching the CUDA version that `nvidia-smi` reports)
 torch>=2.0.0
+
+# Testing
+pytest>=8.0.0
 
 # Financial Data
 yfinance>=0.2.65

@@ -35,9 +35,15 @@ def _resolve_transformer_config(cfg):
 
     - transformer_arch defaults to 'current'.
     - transformer_forecast_window defaults to periods_per_year (None/absent -> ppy).
+    - transformer_loss defaults to 'auto' (the original per-arch MSE/Huber choice).
     - Direct multi-step archs ('B'...) must emit at least periods_to_forecast steps.
     """
     cfg.setdefault('transformer_arch', 'current')
+    cfg.setdefault('transformer_loss', 'auto')
+    if cfg['transformer_loss'] not in ('auto', 'rank_ic'):
+        raise ValueError(
+            f"Unknown transformer_loss: '{cfg['transformer_loss']}'. "
+            f"Valid options: 'auto', 'rank_ic'")
     cfg['transformer_forecast_window'] = (cfg.get('transformer_forecast_window')
                                           or cfg['periods_per_year'])
     if cfg['transformer_arch'].startswith('B'):
