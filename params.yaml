@@ -34,6 +34,9 @@ output_path: "results/allocation_output.csv"
 
 # Transformer model internals — do not change without a deep understanding of the model.
 transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step). Default: B.
+transformer_loss: rank_ic           # 'rank_ic' (cross-sectional ranking objective) | 'auto' (legacy MSE/Huber).
+                                    # rank_ic optimises the ordering the optimiser actually consumes; it is
+                                    # scale-free, so watch the scale ratio printed per training run.
 transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
 n_transformer_runs: 150             # Independent training runs; predictions are averaged.
 time_window: null                   # Input sequence length; null -> periods_per_year.
