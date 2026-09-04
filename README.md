@@ -50,7 +50,9 @@ days_of_data: 3650
 min_active_fraction: 0.90     # Keep stocks traded in >= 90% of recent weeks
 
 # Transformer model
-periods_to_forecast: 4
+periods_to_forecast: 24       # Forecast/allocation horizon in periods
+transformer_loss: rank_ic     # Ranking objective; requires the line above to equal
+                              # transformer_forecast_window
 n_transformer_runs: 50        # Increase for stability; decrease to run faster
 
 # Portfolio optimisation (Step 3)

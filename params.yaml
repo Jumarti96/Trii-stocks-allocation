@@ -13,7 +13,9 @@ download_workers: 3             # parallel batch workers
 download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
 
 # Transformer model (Step 3)
-periods_to_forecast: 4        # How many periods ahead to predict. Suggested default: 4.
+periods_to_forecast: 24       # How many periods ahead to predict, and the horizon the
+                              # allocation is built for. Must equal transformer_forecast_window
+                              # when transformer_loss is rank_ic (see the advanced block below).
 
 # Portfolio optimisation (Step 4)
 allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)

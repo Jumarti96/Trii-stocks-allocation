@@ -51,6 +51,18 @@ def _resolve_transformer_config(cfg):
             raise ValueError(
                 f"transformer_forecast_window ({cfg['transformer_forecast_window']}) "
                 f"must be >= periods_to_forecast ({cfg['periods_to_forecast']})")
+        # rank_ic ranks the cumulative return over the FULL decode window, while
+        # 02_predict.py slices predictions to periods_to_forecast. A mismatch
+        # means the loss optimises a horizon production never consumes. The
+        # pointwise losses are per-step, so a prefix is fine for them.
+        if (cfg['transformer_loss'] == 'rank_ic'
+                and cfg['periods_to_forecast'] != cfg['transformer_forecast_window']):
+            raise ValueError(
+                f"transformer_loss 'rank_ic' ranks the cumulative return over all "
+                f"{cfg['transformer_forecast_window']} decode steps, but "
+                f"periods_to_forecast is {cfg['periods_to_forecast']}, so only the "
+                f"first {cfg['periods_to_forecast']} are used. Set them equal, or "
+                f"use transformer_loss: auto.")
     return cfg
 
 
