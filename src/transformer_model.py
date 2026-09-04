@@ -26,12 +26,36 @@ device  = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 use_amp = torch.cuda.is_available()
 
 
+CUDA_INSTALL_HINT = (
+    "pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu128"
+)
+
+
+def _device_message(torch_version, cuda_available, gpu_name=None):
+    """Build the device description. Split out from describe_device so the
+    CPU-only-wheel diagnosis is testable without a GPU.
+
+    `pip install torch` resolves to the CPU-only wheel on Windows, which cannot
+    use an NVIDIA GPU no matter how healthy the hardware and driver are. Saying
+    "No GPU found" in that case points the reader at the wrong subsystem, so
+    name the actual cause and the fix.
+    """
+    if cuda_available:
+        return f"[GPU] {gpu_name} detected. Tensor Cores enabled (TF32 + AMP)."
+    if '+cpu' in torch_version:
+        return (f"[GPU] torch {torch_version} is a CPU-only build - a CUDA GPU on this "
+                f"machine CANNOT be used, regardless of driver state.\n"
+                f"      Training will be roughly 10x slower. To fix:\n"
+                f"      {CUDA_INSTALL_HINT}")
+    return "[GPU] No CUDA device available - running on CPU."
+
+
 def describe_device():
-    """Return a one-line description of the compute device (callers may print it)."""
+    """Return a description of the compute device (callers may print it)."""
     if use_amp:
         torch.set_float32_matmul_precision('high')
-        return f"[GPU] {torch.cuda.get_device_name(0)} detected. Tensor Cores enabled (TF32 + AMP)."
-    return "[GPU] No GPU found - running on CPU."
+        return _device_message(torch.__version__, True, torch.cuda.get_device_name(0))
+    return _device_message(torch.__version__, False)
 
 
 class PositionalEncoding(nn.Module):
@@ -251,6 +275,101 @@ def _multistep_predict(model, last_window, use_amp):
     return pred[0].cpu().numpy()
 
 
+def _crosssectional_zscore(x):
+    """Standardise across the last (stock) axis. Population std, so that the mean
+    product of two standardised vectors is exactly their Pearson correlation.
+
+    The 1e-8 floor mirrors the guard in _normalise and keeps a constant
+    cross-section (zero dispersion) from producing NaN.
+    """
+    centred = x - x.mean(dim=-1, keepdim=True)
+    return centred / x.std(dim=-1, keepdim=True, unbiased=False).clamp_min(1e-8)
+
+
+def rank_ic_loss(pred, target, sigma=None, mu=None):
+    """Negative cross-sectional IC of the cumulative return. Lower is better.
+
+    Optimises the ordering of stocks rather than the accuracy of their levels,
+    matching what the pipeline actually consumes: 03_allocate.py ranks by Sharpe
+    and keeps the top N, and arch_comparison.py scores Spearman rank IC.
+
+    pred/target: (batch, decode_steps, n_stocks) for direct multistep archs, or
+        (batch, n_stocks) for autoregressive archs. Multistep inputs are summed
+        over the decode axis first, matching arch_comparison.py's
+        `pred_cum = preds_mean[:h].sum(axis=0)`.
+    sigma/mu: per-stock Z-score constants from _normalise. When supplied, the
+        cumulative returns are denormalised so ranking happens in real return
+        space; ranking normalised values would instead order stocks by standard
+        deviations above their own mean. Pass None to skip (C_crosssectional,
+        whose constants are per-timestep scalars that cannot reorder a
+        cross-section anyway).
+
+    Returns a scalar in [-1, 1]; -1 is a perfectly ordered cross-section.
+
+    NOTE: correlation is invariant to `pred -> a*pred + b` for a > 0, so this
+    loss places no constraint on output magnitude. Use compute_scale_ratio to
+    check that the mu reaching the optimiser stays on a usable scale.
+    """
+    # fp32 throughout: the training loop runs under autocast(float16), where the
+    # cross-sectional std of weekly-return magnitudes underflows.
+    p = pred.float()
+    t = target.float()
+
+    if p.dim() == 3:
+        decode_steps = p.shape[1]
+        p = p.sum(dim=1)
+        t = t.sum(dim=1)
+    else:
+        decode_steps = 1
+
+    if sigma is not None:
+        p = p * sigma
+        t = t * sigma
+        if mu is not None:
+            p = p + decode_steps * mu
+            t = t + decode_steps * mu
+
+    return -(_crosssectional_zscore(p) * _crosssectional_zscore(t)).mean()
+
+
+def _select_criterion(cfg, arch, sigma=None, mu=None):
+    """Return the training criterion as a callable (pred, target) -> loss.
+
+    transformer_loss: 'auto' (default) reproduces the original per-arch choice —
+    MSE for the autoregressive 'current' family, Huber(delta=1.0) elsewhere.
+    'rank_ic' selects the cross-sectional ranking objective.
+    """
+    mode = cfg.get('transformer_loss', 'auto')
+    if mode == 'rank_ic':
+        return lambda pred, target: rank_ic_loss(pred, target, sigma=sigma, mu=mu)
+    if mode != 'auto':
+        raise ValueError(f"Unknown transformer_loss: '{mode}'. Valid: 'auto', 'rank_ic'")
+    return nn.MSELoss() if arch in ('current', 'current_rev') else nn.HuberLoss(delta=1.0)
+
+
+def compute_scale_ratio(preds_df, returns_df):
+    """Cross-sectional dispersion of predicted mu relative to history.
+
+    Reuses weighted_mean_return so it measures exactly the vector 02_predict.py
+    hands to the optimiser, compared against the same quantity computed on
+    history (each stock's mean realised return).
+
+    A ratio near 1.0 means predicted mu carries a plausible spread. Because
+    03_allocate.py draws mu ~ N(mu_bar, s^2 * Sigma / T) against a Ledoit-Wolf
+    Sigma in real return units, a ratio far from 1 means michaud_spread is no
+    longer calibrated to the mu it perturbs.
+
+    Returns {'pred_mu_std', 'hist_mu_std', 'ratio'}.
+    """
+    pred_std = float(np.std(weighted_mean_return(preds_df).values))
+    hist_std = float(np.std(returns_df.mean().values))
+    return {
+        'pred_mu_std': pred_std,
+        'hist_mu_std': hist_std,
+        'ratio': pred_std / hist_std if hist_std > 1e-12 else float('nan'),
+    }
+
+
 def weighted_mean_return(preds_df, lambda_=0.2):
     """Exponential-decay-weighted mean of the per-period predicted returns, per column.
 
@@ -346,6 +465,15 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
     X_pred, _  = create_dataset(data_preds, time_window)
     last_window = torch.tensor(X_pred[-1], dtype=torch.float32).unsqueeze(0).to(device)
 
+    # Per-stock Z-score constants for the rank_ic criterion, which ranks in real
+    # return space. C_crosssectional's constants are per-timestep scalars that
+    # cannot reorder a cross-section, so it ranks the normalised values directly.
+    if arch in _CROSSSECTIONAL_ARCHS:
+        sigma_t = mu_t = None
+    else:
+        sigma_t = torch.tensor(sigma, dtype=torch.float32).to(device)
+        mu_t    = torch.tensor(mu,    dtype=torch.float32).to(device)
+
     all_preds_runs = []
     for run in range(n_runs):
         if verbose:
@@ -354,7 +482,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         model      = build_arch(arch, input_shape=(time_window, X.shape[2]),
                                decode_steps=decode_steps, n_outputs=n_outputs).to(device)
         optimizer  = optim.Adam(model.parameters(), lr=lr)
-        criterion  = nn.MSELoss() if arch in ('current', 'current_rev') else nn.HuberLoss(delta=1.0)
+        criterion  = _select_criterion(cfg, arch, sigma=sigma_t, mu=mu_t)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         scaler     = torch.cuda.amp.GradScaler() if use_amp else None
 
@@ -398,6 +526,13 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
             run_preds = _denormalise_crosssectional(run_preds, mu_last, sigma_last)
         else:
             run_preds = _denormalise(run_preds, mu, sigma)
+
+        if verbose:
+            d = compute_scale_ratio(pd.DataFrame(run_preds, columns=returns_df.columns),
+                                    returns_df)
+            print(f"    scale ratio: {d['ratio']:.3f}   "
+                  f"(pred mu std {d['pred_mu_std']:.6f} | "
+                  f"hist mu std {d['hist_mu_std']:.6f})")
 
         all_preds_runs.append(run_preds)
 

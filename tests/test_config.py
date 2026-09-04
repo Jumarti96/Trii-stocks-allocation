@@ -52,3 +52,22 @@ def test_real_params_load_with_B_arch():
     assert cfg['transformer_arch'] == 'B'
     assert cfg['transformer_forecast_window'] == 24
     assert cfg['transformer_forecast_window'] >= cfg['periods_to_forecast']
+
+
+def test_transformer_loss_defaults_to_auto():
+    cfg = _resolve_transformer_config(_base_cfg())
+    assert cfg['transformer_loss'] == 'auto'
+
+
+def test_explicit_transformer_loss_preserved():
+    cfg = _resolve_transformer_config(_base_cfg(transformer_loss='rank_ic'))
+    assert cfg['transformer_loss'] == 'rank_ic'
+
+
+def test_transformer_loss_guard_rejects_unknown():
+    with pytest.raises(ValueError):
+        _resolve_transformer_config(_base_cfg(transformer_loss='nonsense'))
+
+
+def test_real_params_select_rank_ic_loss():
+    assert load_config()['transformer_loss'] == 'rank_ic'

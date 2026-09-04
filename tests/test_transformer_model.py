@@ -425,3 +425,156 @@ def test_train_runs_current_rev_shape_and_scale():
     # autoregressive -> periods_to_forecast steps, output = n_stocks
     assert runs.shape == (1, cfg['periods_to_forecast'], 5)
     assert runs.std() < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Rank IC loss
+# ---------------------------------------------------------------------------
+from transformer_model import rank_ic_loss, _select_criterion, compute_scale_ratio
+
+
+def test_rank_ic_loss_perfect_ordering_is_minus_one():
+    pred = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    y    = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    assert abs(rank_ic_loss(pred, y).item() - (-1.0)) < 1e-5
+
+
+def test_rank_ic_loss_exact_anti_ordering_is_plus_one():
+    pred = torch.tensor([[4.0, 3.0, 2.0, 1.0]])
+    y    = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    assert abs(rank_ic_loss(pred, y).item() - 1.0) < 1e-5
+
+
+def test_rank_ic_loss_invariant_to_positive_affine_transform():
+    # This is the property that motivates the scale diagnostic: correlation
+    # cannot distinguish a prediction from a rescaled/shifted copy of itself,
+    # so nothing in this loss constrains output magnitude.
+    pred = torch.tensor([[0.01, -0.02, 0.03, 0.005]])
+    y    = torch.tensor([[0.02, -0.01, 0.04, 0.001]])
+    base    = rank_ic_loss(pred, y).item()
+    rescale = rank_ic_loss(pred * 100.0 + 7.0, y).item()
+    assert abs(base - rescale) < 1e-5
+
+
+def test_rank_ic_loss_constant_prediction_is_finite():
+    pred = torch.tensor([[2.0, 2.0, 2.0, 2.0]])   # zero cross-sectional std
+    y    = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    out  = rank_ic_loss(pred, y).item()
+    assert np.isfinite(out)
+
+
+def test_rank_ic_loss_reduces_multistep_by_cumulative_sum():
+    # Two multistep tensors with identical sum over the decode axis but
+    # different per-step composition must score identically.
+    a = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])   # sums to [4, 6]
+    b = torch.tensor([[[0.0, 0.0], [4.0, 6.0]]])   # sums to [4, 6]
+    y = torch.tensor([[[1.0, 5.0], [2.0, 1.0]]])
+    assert abs(rank_ic_loss(a, y).item() - rank_ic_loss(b, y).item()) < 1e-6
+
+
+def test_rank_ic_loss_denormalisation_changes_ranking():
+    # Per-stock sigma differs by 10x, which reorders the cross-section.
+    # Dropping the sigma/mu plumbing would silently rank in z-score space.
+    # pred and target must differ, or the correlation is 1.0 under any
+    # order-preserving transform and the test cannot discriminate.
+    pred  = torch.tensor([[1.0, 2.0, 3.0]])
+    y     = torch.tensor([[3.0, 1.0, 2.0]])
+    sigma = torch.tensor([10.0, 1.0, 1.0])
+    mu    = torch.tensor([0.0, 0.0, 0.0])
+    z_space    = rank_ic_loss(pred, y).item()
+    real_space = rank_ic_loss(pred, y, sigma=sigma, mu=mu).item()
+    assert abs(z_space - 0.5) < 1e-5        # corr([1,2,3],[3,1,2]) = -0.5
+    assert real_space < -0.9                # denormalised, the two nearly agree
+
+
+def test_rank_ic_loss_computes_in_fp32_for_half_inputs():
+    # The training loop runs under autocast(float16); cross-sectional std of
+    # weekly-return magnitudes underflows in fp16.
+    pred32 = torch.tensor([[0.001, -0.002, 0.003, 0.0005]])
+    y32    = torch.tensor([[0.002, -0.001, 0.004, 0.0001]])
+    out16  = rank_ic_loss(pred32.half(), y32.half()).item()
+    out32  = rank_ic_loss(pred32, y32).item()
+    assert np.isfinite(out16)
+    assert abs(out16 - out32) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# Criterion selection
+# ---------------------------------------------------------------------------
+
+def test_select_criterion_defaults_preserve_huber_and_mse():
+    import torch.nn as nn
+    assert isinstance(_select_criterion({}, 'B'), nn.HuberLoss)
+    assert isinstance(_select_criterion({}, 'B_24'), nn.HuberLoss)
+    assert isinstance(_select_criterion({}, 'current'), nn.MSELoss)
+    assert isinstance(_select_criterion({}, 'current_rev'), nn.MSELoss)
+
+
+def test_select_criterion_rank_ic_returns_callable_not_huber():
+    import torch.nn as nn
+    crit = _select_criterion({'transformer_loss': 'rank_ic'}, 'B')
+    assert not isinstance(crit, (nn.HuberLoss, nn.MSELoss))
+    out = crit(torch.tensor([[1.0, 2.0, 3.0]]), torch.tensor([[1.0, 2.0, 3.0]]))
+    assert abs(out.item() - (-1.0)) < 1e-5
+
+
+def test_select_criterion_unknown_mode_raises():
+    with pytest.raises(ValueError):
+        _select_criterion({'transformer_loss': 'nonsense'}, 'B')
+
+
+# ---------------------------------------------------------------------------
+# Scale diagnostic
+# ---------------------------------------------------------------------------
+
+def test_compute_scale_ratio_is_one_when_dispersion_matches_history():
+    rets = _tiny_rets_arch(3, n_stocks=6, n_periods=50)
+    # Predictions whose exp-decay weighted mean equals each stock's historical
+    # mean return exactly -> identical cross-sectional dispersion -> ratio 1.
+    preds = pd.DataFrame(
+        np.tile(rets.mean().values, (4, 1)), columns=rets.columns
+    )
+    assert abs(compute_scale_ratio(preds, rets)['ratio'] - 1.0) < 1e-6
+
+
+def test_compute_scale_ratio_detects_shrunken_predictions():
+    rets = _tiny_rets_arch(4, n_stocks=6, n_periods=50)
+    preds = pd.DataFrame(
+        np.tile(rets.mean().values * 0.01, (4, 1)), columns=rets.columns
+    )
+    assert abs(compute_scale_ratio(preds, rets)['ratio'] - 0.01) < 1e-6
+
+
+from transformer_model import _device_message
+
+
+def test_device_message_reports_gpu_when_cuda_available():
+    msg = _device_message('2.11.0+cu128', True, gpu_name='RTX 4090')
+    assert 'RTX 4090' in msg
+    assert 'Tensor Cores' in msg
+
+
+def test_device_message_diagnoses_cpu_only_wheel():
+    # The failure mode that hid a working 4090: torch cannot see the GPU because
+    # the installed wheel has no CUDA in it. "No GPU found" sends the reader
+    # looking for a hardware fault instead of a pip problem.
+    msg = _device_message('2.14.0+cpu', False)
+    assert 'CPU-only build' in msg
+    assert 'download.pytorch.org' in msg
+
+
+def test_device_message_does_not_blame_the_wheel_for_a_cuda_build():
+    # A CUDA build with no usable device is a different problem; claiming the
+    # wheel is CPU-only would be a false diagnosis.
+    msg = _device_message('2.11.0+cu128', False)
+    assert 'CPU-only build' not in msg
+    assert 'CPU' in msg
+
+
+def test_train_runs_rank_ic_shape_and_original_scale():
+    cfg = {**_tiny_arch_cfg(), 'transformer_loss': 'rank_ic'}
+    rets = _tiny_rets_arch(13, n_stocks=5, n_periods=60)
+    runs = train_runs(rets, cfg, n_runs=1, verbose=False, arch='B_4')
+    assert runs.shape == (1, 4, 5)
+    assert np.isfinite(runs).all()
+    assert runs.std() < 0.5          # denormalised to return scale, not ~1.0
