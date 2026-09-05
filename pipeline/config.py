@@ -18,6 +18,9 @@ PATHS = {
     # Step 1 outputs
     '01_prices':           os.path.join(DATA_DIR, '01_prices.csv'),
     '01_returns':          os.path.join(DATA_DIR, '01_returns.csv'),
+    '01_volume':           os.path.join(DATA_DIR, '01_volume.csv'),
+    '01_fx':               os.path.join(DATA_DIR, '01_fx.csv'),
+    '01_currency':         os.path.join(DATA_DIR, '01_currency.csv'),
     # Step 2 outputs (Transformer prediction, full universe)
     '02_expected_returns': os.path.join(DATA_DIR, '02_expected_returns.csv'),
     '02_covmat':           os.path.join(DATA_DIR, '02_covmat.csv'),
@@ -66,6 +69,33 @@ def _resolve_transformer_config(cfg):
     return cfg
 
 
+def _resolve_universe_config(cfg):
+    """Apply universe-screen defaults and validate them.
+
+    The screen is OFF by default (universe_topn=None): an 80-stock universe does not
+    need one, and a null topn leaves the pipeline byte-identical to its pre-screen
+    behaviour. Set it when pointing the pipeline at a large catalogue.
+    """
+    cfg.setdefault('universe_topn', None)
+    cfg.setdefault('universe_strata', None)
+    cfg.setdefault('universe_price_floor', 0.0)
+    cfg.setdefault('universe_min_market_cap', None)
+
+    topn = cfg['universe_topn']
+    if topn is None:
+        return cfg
+    if not isinstance(topn, int) or topn <= 0:
+        raise ValueError(f"universe_topn must be a positive int or null, got {topn!r}")
+
+    strata = cfg['universe_strata']
+    if strata and sum(strata) != topn:
+        raise ValueError(
+            f"universe_strata {strata} sum to {sum(strata)}, but must sum to "
+            f"universe_topn ({topn}) -- otherwise the screen silently returns a "
+            f"different number of names than requested.")
+    return cfg
+
+
 def load_config(config_path=None):
     """Load params.yaml and return a config dict with derived values added."""
     if config_path is None:
@@ -84,5 +114,6 @@ def load_config(config_path=None):
     PATHS['04_report'] = os.path.join(BASE_DIR, cfg['output_path'])
 
     cfg = _resolve_transformer_config(cfg)
+    cfg = _resolve_universe_config(cfg)
 
     return cfg

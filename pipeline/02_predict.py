@@ -1,11 +1,20 @@
 """
 Step 2 - Transformer Prediction and Covariance Estimation
 
-Trains the Transformer on the FULL stock universe (every ticker from step 1), not a
-pre-filtered subset. Training on the full cross-section - winners and losers, trends and
-reversals - avoids the optimistic bias that arises when the model only ever sees stocks
-hand-picked to be in an uptrend. The technical filter (step 3) is applied later, purely as
-an allocation gate in step 4.
+Trains the Transformer on the full cross-section - winners and losers, trends and
+reversals - which avoids the optimistic bias that arises when the model only ever sees
+stocks hand-picked to be in an uptrend. The technical filter (step 3) is applied later,
+purely as an allocation gate in step 4.
+
+When universe_topn is set, the cross-section is first narrowed by the universe screen
+(src/data_intake.select_universe). This does NOT reintroduce that bias: the screen is
+return-neutral by construction - it ranks on liquidity, price and optionally size, never
+on past performance - so it cannot preferentially retain stocks that went up. It is a
+*style* tilt toward large caps, which is a different thing and worth stating in results.
+The screen exists because stocks are the model's feature axis: widening the universe adds
+parameters and zero training samples, so a 3.9k catalogue is bounded by
+parameters-per-sample long before it is bounded by memory (see transformer_model
+.capacity_report). universe_topn: null disables it entirely.
 
 Predictions are averaged across N runs (to damp random-initialisation noise), winsorised at
 the 1st-99th percentile of historical returns, annualised with exponential-decay weighting,
@@ -34,7 +43,9 @@ import pandas as pd
 from sklearn.covariance import LedoitWolf
 
 from config import load_config, PATHS
-from transformer_model import train_and_predict, weighted_mean_return, describe_device
+from data_intake import select_universe
+from transformer_model import (train_and_predict, weighted_mean_return, describe_device,
+                               capacity_report)
 
 
 def main():
@@ -48,7 +59,33 @@ def main():
 
     periods_to_forecast = cfg['periods_to_forecast']
 
-    # Train on the full universe and forecast every stock
+    # Universe screen. A null universe_topn is a complete no-op, so the default
+    # path is byte-identical to the pre-screen pipeline.
+    if cfg.get('universe_topn'):
+        volume = pd.read_csv(PATHS['01_volume'], index_col=0)
+        fx      = pd.read_csv(PATHS['01_fx'], index_col=0)
+        cur_map = pd.read_csv(PATHS['01_currency'], index_col=0)['currency'].to_dict()
+        universe = select_universe(
+            prices, volume, cfg['universe_topn'],
+            strata=cfg.get('universe_strata'),
+            price_floor=cfg.get('universe_price_floor', 0.0),
+            fx=fx, cur_map=cur_map,
+        )
+        print(f"Universe screen: {len(universe)} of {prices.shape[1]} stocks "
+              f"(topn={cfg['universe_topn']}, strata={cfg.get('universe_strata')})")
+        prices = prices[universe]
+        rets   = rets[universe]
+
+    # Capacity check. Widening the universe adds parameters and zero training
+    # samples, so this ratio - not VRAM - is what bounds universe size.
+    cap = capacity_report(rets.shape[1], rets.shape[0], cfg)
+    print(f"Capacity: {cap['message']}")
+    if cap['verdict'] == 'error':
+        raise ValueError(
+            f"universe too large to train: {cap['params_per_sample']:,.0f} "
+            f"parameters per training sample. {cap['message']}")
+
+    # Train on the (screened) universe and forecast every stock in it
     arch = cfg.get('transformer_arch', 'current')
     preds_df = train_and_predict(rets, cfg, arch=arch)
     preds_df = preds_df.iloc[:periods_to_forecast]   # no-op for current; e.g. 24->4 for B
