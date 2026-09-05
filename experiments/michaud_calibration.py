@@ -136,6 +136,49 @@ def max_drawdown(returns):
     return float((wealth / wealth.cummax() - 1).min())
 
 
+def bootstrap_best_spread(period_returns, turnovers, rf, cost, periods_per_year,
+                          horizon, n_boot=2000, seed=0):
+    """How often each spread wins on net Sharpe, resampling the rebalance periods.
+
+    period_returns / turnovers: DataFrames indexed by rebalance, columns = spreads.
+
+    With only ~13 rebalances, the gap between adjacent spreads can easily be
+    noise. Resampling the SAME period indices across every spread keeps the
+    comparison paired, so this measures whether one setting genuinely beats
+    another rather than whether the sample happened to be kind to it.
+
+    Returns (P(best) per spread, standard error of net Sharpe per spread). A
+    diffuse P means the data cannot separate the settings, and no single value
+    should be recommended.
+    """
+    rng = np.random.default_rng(seed)
+    cols = list(period_returns.columns)
+    n = len(period_returns)
+    rets = period_returns[cols].to_numpy(dtype=float)
+    turn = turnovers[cols].to_numpy(dtype=float)
+
+    wins = np.zeros(len(cols))
+    sharpes = np.empty((n_boot, len(cols)))
+    for b in range(n_boot):
+        idx = rng.integers(0, n, n)          # same draw for every spread: paired
+        r, t = rets[idx], turn[idx]
+        ann = np.prod(1 + r, axis=0) ** (periods_per_year / (n * horizon)) - 1
+        vol = r.std(axis=0, ddof=0) * np.sqrt(periods_per_year / horizon)
+        net = ann - annual_cost_drag(t.mean(axis=0), cost, periods_per_year, horizon)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            s = np.where(vol > 0, (net - rf) / vol, np.nan)
+        sharpes[b] = s
+        if not np.all(np.isnan(s)):
+            # Break ties at random. np.nanargmax always returns the first index,
+            # which would report indistinguishable settings as a clean winner --
+            # precisely the false confidence this bootstrap exists to detect.
+            tied = np.flatnonzero(np.isclose(s, np.nanmax(s), rtol=1e-12, atol=1e-15))
+            wins[tied[0] if len(tied) == 1 else rng.choice(tied)] += 1
+
+    return (pd.Series(wins / n_boot, index=cols),
+            pd.Series(np.nanstd(sharpes, axis=0, ddof=1), index=cols))
+
+
 def annual_cost_drag(mean_turnover, cost, periods_per_year, horizon):
     """Annual return give-up from trading: turnover x cost x rebalances per year."""
     return mean_turnover * cost * (periods_per_year / horizon)
@@ -340,12 +383,14 @@ def run_timing_calibration(rets, cfg, splits, spreads, n_cal=3):
 # Harness
 # ---------------------------------------------------------------------------
 
-def write_outputs(raw, summary, sens, gate, out_dir, doc_path, n_runs, draws):
+def write_outputs(raw, summary, sens, gate, boot, out_dir, doc_path, n_runs, draws):
     """CSVs to experiments/results (gitignored) and a summary to docs/ (tracked)."""
     os.makedirs(out_dir, exist_ok=True)
     raw.to_csv(os.path.join(out_dir, 'raw.csv'), index=False)
     summary.to_csv(os.path.join(out_dir, 'summary.csv'), index=False)
     sens.to_csv(os.path.join(out_dir, 'cost_sensitivity.csv'), index=False)
+    boot_df = pd.concat({k: v for k, v in boot.items()}, names=['arm', 'spread'])
+    boot_df.to_csv(os.path.join(out_dir, 'bootstrap.csv'))
 
     verdict = ("VALIDATED" if gate['validated'] else "NOT VALIDATED")
     os.makedirs(os.path.dirname(doc_path), exist_ok=True)
@@ -377,6 +422,17 @@ def write_outputs(raw, summary, sens, gate, out_dir, doc_path, n_runs, draws):
          f"`{gate['best_target']}`**" if gate['validated'] else
          "**No recommendation** -- the control failed, so arm B's optimum "
          f"(`s={gate['best_target']}`) is not reportable."),
+        "",
+        (f"Bootstrap over the {len(raw['split'].unique())} rebalance periods: that "
+         f"value wins {gate['p_best_target']:.0%} of resamples."
+         + ("" if gate['conclusive'] else
+            "  **Below 50%, so the sample cannot separate these settings -- treat "
+            "the value as a direction, not a precise recommendation.**")),
+        "",
+        "```",
+        pd.concat({k: v for k, v in boot.items()},
+                  names=['arm', 'spread']).to_string(),
+        "```",
         "",
         "## Full sweep",
         "",
@@ -461,6 +517,21 @@ def main():
         ('max drawdown',      'max_drawdown',      True),
         ('regime consistency', 'regime_vol_spread', False),
     ]
+    print("\nBootstrap over rebalance periods -- P(this s wins on net Sharpe):")
+    boot = {}
+    for arm in ('A_control', 'B_target'):
+        g = raw[raw['arm'] == arm]
+        piv_r = g.pivot(index='split', columns='spread', values='realised_period_return')
+        piv_t = g.pivot(index='split', columns='spread',
+                        values='turnover_drift').fillna(0.0)
+        p, se = bootstrap_best_spread(piv_r, piv_t, cfg['rf_rate'], COST_ROUND_TRIP,
+                                      cfg['periods_per_year'], HORIZON)
+        boot[arm] = pd.DataFrame({'p_best': p, 'sharpe_se': se})
+        print(f"  {arm}:")
+        print("    " + "  ".join(f"s={s}:{p[s]:.0%}" for s in p.index))
+        print(f"    max P(best) = {p.max():.0%} at s={p.idxmax()}"
+              + ("  <- data cannot separate the settings" if p.max() < 0.5 else ""))
+
     print("\nOptimal s by criterion:")
     picks = {}
     for arm in ('A_control', 'B_target'):
@@ -492,8 +563,16 @@ def main():
         print("  *** control did NOT recover s~4.0 -- harness is NOT validated. ***")
         print(f"  *** arm B's optimum (s={best_tgt}) must NOT be used. ***")
 
-    gate = {'validated': validated, 'best_control': best_ctrl, 'best_target': best_tgt}
-    write_outputs(raw, summary, sens, gate, _OUT_DIR, _DOC_PATH,
+    # A recommendation is only meaningful if the bootstrap can actually separate
+    # the settings; report it as inconclusive otherwise.
+    p_best = boot['B_target']['p_best']
+    gate = {'validated': validated, 'best_control': best_ctrl,
+            'best_target': best_tgt, 'p_best_target': float(p_best.max()),
+            'conclusive': bool(p_best.max() >= 0.5)}
+    if validated and not gate['conclusive']:
+        print(f"\n  NOTE: best s wins only {p_best.max():.0%} of bootstrap "
+              f"resamples -- the 13 rebalances cannot distinguish these settings.")
+    write_outputs(raw, summary, sens, gate, boot, _OUT_DIR, _DOC_PATH,
                   args.n_runs, cfg.get('michaud_mc_draws'))
     print(f"\nSaved: {_OUT_DIR}\n       {_DOC_PATH}")
 

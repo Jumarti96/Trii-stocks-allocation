@@ -59,22 +59,69 @@ def msr_eliminate(returns, covmat, cfg):
     return weights
 
 
-def apply_consensus_floor(weights, min_weight):
+def _cap_weights(weights, max_weight, tol=1e-12, max_passes=100):
+    """Clip to max_weight and redistribute the freed weight, until nothing exceeds it.
+
+    Iterative because capping one name pushes its excess onto the others, which can
+    carry a second name over the cap. Each pass strictly reduces the excess, so this
+    converges; max_passes is a backstop, not a tuning knob.
+    """
+    w = weights.copy()
+    for _ in range(max_passes):
+        over = w > max_weight + tol
+        if not over.any():
+            return w
+        w[over] = max_weight
+        deficit = 1.0 - w.sum()
+        room = ~over
+        if deficit <= tol or not room.any() or w[room].sum() <= tol:
+            return w
+        w[room] += deficit * w[room] / w[room].sum()
+    return w
+
+
+def apply_consensus_floor(weights, min_weight, max_weight=1.0):
     """Enforce the min-weight floor on an averaged consensus, without re-optimising.
 
     Drops names whose cumulative weight (sorted ascending) is below min_weight and renormalises
-    the survivors to sum to 1, iterating until every survivor passes; the len<=2 guard keeps the
-    book from emptying. Returns a Series over the original index (dropped = 0.0).
+    the survivors to sum to 1, iterating until every survivor passes. Returns a Series over the
+    original index (dropped = 0.0).
+
+    max_weight re-enforces the per-name cap AFTER renormalisation. msr_tuned bounds every MC
+    draw, but averaging and then renormalising the survivors can push a name back over the cap
+    with nothing re-checking it: on the calibration sweep, 72 of 208 allocations exceeded a 0.15
+    cap, median 21% over, worst 0.285. Defaults to 1.0 so existing callers are unaffected.
+
+    The drop loop also stops at ceil(1/max_weight) survivors, because a cap of c admits no
+    feasible book with fewer than 1/c names (6 names cannot sum to 1 under a 0.15 cap). Raises
+    ValueError when the universe itself is too small for the cap -- shipping a book that breaks
+    a stated limit is worse than failing loudly.
+
+    Floor first, then cap: capping only raises the uncapped names, so the surviving tail grows
+    and the floor cannot be re-violated. There is no cycle between the two constraints.
     """
     names = list(weights.index)
     w = weights[weights > 0].sort_values().copy()
-    while len(w) > 2:
+
+    min_names = max(2, int(np.ceil(1.0 / max_weight - 1e-9)))
+    if len(w) < min_names:
+        raise ValueError(
+            f"max_weight={max_weight} needs at least {min_names} names to sum to 1, "
+            f"but only {len(w)} have positive weight")
+
+    while len(w) > min_names:
         cum = w.cumsum()
         failing = cum < min_weight
         if not failing.any():
             break
-        w = w[~failing]
-        w = (w / w.sum()).sort_values()
+        survivors = w[~failing]
+        if len(survivors) < min_names:      # dropping would breach feasibility
+            break
+        w = (survivors / survivors.sum()).sort_values()
+
+    if max_weight < 1.0:
+        w = _cap_weights(w, max_weight)
+
     out = pd.Series(0.0, index=names)
     out[w.index] = w
     return out
@@ -133,7 +180,7 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
             print(f"  MC draw {i + 1}/{n_draws}")
 
     raw = pd.DataFrame(rows).reset_index(drop=True)
-    return apply_consensus_floor(raw.mean(axis=0), min_w)
+    return apply_consensus_floor(raw.mean(axis=0), min_w, max_w)
 
 
 def select_top_n(mu, covmat, n, metric="sharpe"):

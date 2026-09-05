@@ -28,6 +28,7 @@ from michaud_calibration import (
     net_of_cost_sharpe,
     downside_deviation,
     max_drawdown,
+    bootstrap_best_spread,
 )
 
 
@@ -220,6 +221,63 @@ def test_max_drawdown_of_monotonic_gains_is_zero():
 def test_max_drawdown_matches_hand_computation():
     # +100% then -50% -> wealth 1, 2, 1 -> trough is 50% below the peak.
     assert max_drawdown(pd.Series([1.0, -0.5])) == pytest.approx(-0.5)
+
+
+def _boot_frames(cols, per_period):
+    """Realised-return and turnover frames for a set of spreads."""
+    rets = pd.DataFrame({c: per_period[c] for c in cols})
+    turn = pd.DataFrame({c: [0.4] * len(rets) for c in cols})
+    return rets, turn
+
+
+_BOOT_KW = dict(rf=0.11, cost=0.005, periods_per_year=54, horizon=24,
+                n_boot=400, seed=0)
+
+
+def test_bootstrap_probabilities_sum_to_one():
+    rets, turn = _boot_frames([1.0, 4.0], {
+        1.0: [0.10, 0.05, -0.02, 0.08, 0.03],
+        4.0: [0.06, 0.04, 0.00, 0.05, 0.02]})
+    p, se = bootstrap_best_spread(rets, turn, **_BOOT_KW)
+    assert p.sum() == pytest.approx(1.0)
+    assert set(p.index) == {1.0, 4.0}
+    assert (se >= 0).all()
+
+
+def test_bootstrap_is_reproducible_for_a_fixed_seed():
+    rets, turn = _boot_frames([1.0, 4.0], {
+        1.0: [0.10, 0.05, -0.02, 0.08, 0.03],
+        4.0: [0.06, 0.04, 0.00, 0.05, 0.02]})
+    a, _ = bootstrap_best_spread(rets, turn, **_BOOT_KW)
+    b, _ = bootstrap_best_spread(rets, turn, **_BOOT_KW)
+    pd.testing.assert_series_equal(a, b)
+
+
+def test_bootstrap_splits_evenly_between_identical_spreads():
+    # The case that matters: if two settings are indistinguishable, neither
+    # should be reported as the winner.
+    same = [0.10, 0.05, -0.02, 0.08, 0.03]
+    rets, turn = _boot_frames([1.0, 4.0], {1.0: same, 4.0: list(same)})
+    p, _ = bootstrap_best_spread(rets, turn, **_BOOT_KW)
+    assert p[1.0] == pytest.approx(0.5, abs=0.05)
+
+
+def test_bootstrap_concentrates_on_a_dominant_spread():
+    rets, turn = _boot_frames([1.0, 4.0], {
+        1.0: [0.20, 0.19, 0.21, 0.20, 0.19],     # higher and steadier
+        4.0: [0.01, -0.05, 0.02, -0.03, 0.00]})
+    p, _ = bootstrap_best_spread(rets, turn, **_BOOT_KW)
+    assert p[1.0] > 0.95
+
+
+def test_bootstrap_standard_error_grows_with_dispersion():
+    # Near-constant rather than exactly constant: zero dispersion gives zero vol,
+    # which makes Sharpe genuinely undefined rather than merely precise.
+    steady = [0.050, 0.052, 0.049, 0.051, 0.050]
+    wild   = [0.40, -0.30, 0.35, -0.25, 0.20]
+    _, se_a = bootstrap_best_spread(*_boot_frames([1.0], {1.0: steady}), **_BOOT_KW)
+    _, se_b = bootstrap_best_spread(*_boot_frames([1.0], {1.0: wild}), **_BOOT_KW)
+    assert se_b[1.0] > se_a[1.0]
 
 
 def test_max_drawdown_uses_running_peak_not_first_value():
