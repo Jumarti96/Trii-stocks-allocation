@@ -9,7 +9,8 @@ Outputs (data/):
     01_prices.csv     - adjusted close prices for the kept (active) universe
     01_returns.csv    - period returns for the kept universe
     01_volume.csv     - period volume, for the step-2 universe screen
-    01_currency.csv   - per ticker: quote currency, minor-unit factor, resolution source
+    01_currency.csv   - per identifier: quote currency, minor-unit factor, trading
+                        symbol, name, resolution source
     01_fx.csv         - per-period conversion rate into USD, one column per currency
     01_liquidity.csv  - per kept ticker: avg_dollar_volume (info), active_fraction, kept (audit)
 """
@@ -28,7 +29,7 @@ import pandas as pd
 
 from config import load_config, PATHS, BASE_DIR
 from data_intake import (load_tickers, download_all, activity_filter, activity_health,
-                         resolve_currencies, fetch_fx_rates)
+                         resolve_listings, fetch_fx_rates)
 
 
 def main():
@@ -74,9 +75,9 @@ def main():
     # (CSPX.L is USD despite .L), KY/CN issuers listed in Hong Kong, and cents-quoted
     # Johannesburg lines. Errors run from 1.35x to 100x on exactly the magnitude the
     # universe screen ranks by.
-    print(f"Resolving quote currencies for {len(kept)} stocks "
-          f"(~{len(kept) * 0.7 / 60:.0f} min, cached to 01_currency.csv)...")
-    cur_df = resolve_currencies(list(close_kept.columns), verbose=True)
+    print(f"Resolving listings for {len(kept)} stocks "
+          f"(~{len(kept) * 0.9 / 60:.0f} min, cached to 01_currency.csv)...")
+    cur_df = resolve_listings(list(close_kept.columns), verbose=True)
     cur_df.to_csv(PATHS["01_currency"])
 
     unknown = sorted(cur_df.index[cur_df["currency"].isna()])
@@ -85,8 +86,11 @@ def main():
               f"screen: {len(unknown)} -> {unknown[:15]}")
     n_inferred = int((cur_df["source"] == "inferred").sum())
     n_minor = int((cur_df["unit_factor"] != 1.0).sum())
+    n_renamed = int((cur_df["symbol"] != cur_df.index).sum())
     print(f"  {len(cur_df) - n_inferred} by lookup, {n_inferred} by inference "
           f"fallback, {n_minor} quoted in minor units (pence/cents)")
+    print(f"  {n_renamed} identifiers resolved to a different trading symbol "
+          f"(ISIN -> ticker)")
 
     currencies = sorted(cur_df["currency"].dropna().unique())
     fx = fetch_fx_rates(currencies, close_kept.index, hub="USD")

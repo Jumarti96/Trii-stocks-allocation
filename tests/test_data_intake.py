@@ -229,25 +229,44 @@ def test_normalise_currency_code_handles_minor_units():
     assert di.normalise_currency_code(None) == (None, 1.0)
 
 
-def test_resolve_currencies_prefers_the_authoritative_lookup():
+def test_resolve_listings_prefers_the_authoritative_lookup():
     # Exchange suffix is only a heuristic, and it is wrong for cross-listed ETFs:
     # CSPX.L is USD-denominated despite the .L suffix, and KY-domiciled ISINs are
     # frequently HKD-listed. Measured 87.5% suffix/ISIN accuracy over 56 names.
-    got = di.resolve_currencies(["CSPX.L", "NVDA"],
-                                fetch_fn=lambda s: {"CSPX.L": "USD"}.get(s))
+    got = di.resolve_listings(["CSPX.L", "NVDA"],
+                              fetch_fn=lambda s: {"CSPX.L": {"currency": "USD"}}.get(s))
     assert got.loc["CSPX.L", "currency"] == "USD"       # lookup beat the .L -> GBP table
     assert got.loc["NVDA", "currency"] == "USD"
 
 
-def test_resolve_currencies_falls_back_to_inference_when_lookup_is_empty():
-    got = di.resolve_currencies(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+def test_resolve_listings_falls_back_to_inference_when_lookup_is_empty():
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
     assert got.loc["ECOPETROL.CL", "currency"] == "COP"
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
 
 
-def test_resolve_currencies_records_the_minor_unit_factor():
-    got = di.resolve_currencies(["VOD.L"], fetch_fn=lambda s: "GBp")
+def test_resolve_listings_records_the_minor_unit_factor():
+    got = di.resolve_listings(["VOD.L"], fetch_fn=lambda s: {"currency": "GBp"})
     assert got.loc["VOD.L", "currency"] == "GBP"
     assert got.loc["VOD.L", "unit_factor"] == 0.01
+
+
+def test_resolve_listings_captures_symbol_and_name():
+    # The catalogue is ISINs, and yfinance labels its output columns with the input
+    # identifier -- so without this the final allocation report would name
+    # 'US67066G1040' rather than 'NVDA', which nobody can trade against. The symbol
+    # arrives in the same .info call as the currency, at no extra network cost.
+    got = di.resolve_listings(
+        ["US67066G1040"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "NVDA",
+                            "shortName": "NVIDIA Corporation"})
+    assert got.loc["US67066G1040", "symbol"] == "NVDA"
+    assert got.loc["US67066G1040", "name"] == "NVIDIA Corporation"
+
+
+def test_resolve_listings_falls_back_to_the_identifier_as_symbol():
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    assert got.loc["ECOPETROL.CL", "symbol"] == "ECOPETROL.CL"
 
 
 def test_to_hub_currency_applies_unit_factors():

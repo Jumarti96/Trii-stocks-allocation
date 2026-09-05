@@ -233,43 +233,58 @@ def normalise_currency_code(raw):
     return up, 1.0
 
 
-def _yf_currency(symbol):
-    """Authoritative quote currency for one symbol via yfinance. None if unavailable."""
+def _yf_listing(identifier):
+    """Listing metadata for one identifier via yfinance. None if unavailable."""
     import yfinance as yf
     try:
-        return yf.Ticker(symbol).info.get("currency")
+        return yf.Ticker(identifier).info
     except Exception:  # noqa: BLE001 - caller falls back to inference
         return None
 
 
-def resolve_currencies(symbols, fetch_fn=None, verbose=False):
-    """Authoritative per-symbol quote currency, falling back to infer_currency.
+def resolve_listings(identifiers, fetch_fn=None, verbose=False):
+    """Authoritative listing metadata per identifier, falling back to inference.
 
-    Returns a DataFrame indexed by symbol with columns ['currency', 'unit_factor'].
+    Returns a DataFrame indexed by the input identifier, with columns
+    ['currency', 'unit_factor', 'symbol', 'name', 'source'].
 
-    The exchange-suffix and ISIN-country tables are heuristics, and measurement puts
-    them at 87.5% over a 56-name stratified sample. The failures are not evenly
-    spread: cross-listed ETFs are systematically wrong (CSPX.L and SGLD.L are
-    USD-denominated despite .L; IUES.SW is USD despite .SW), Cayman and mainland-China
-    ISINs are frequently HKD rather than USD/CNY, and Johannesburg quotes arrive in
-    cents. Those errors range from 1.35x to 100x, all of them in the magnitude the
-    universe screen ranks on, so the lookup is worth its cost.
+    **Currency**: the exchange-suffix and ISIN-country tables are heuristics, measured
+    at 87.5% over a 56-name stratified sample. The failures are not evenly spread:
+    cross-listed ETFs are systematically wrong (CSPX.L and SGLD.L are USD-denominated
+    despite .L; IUES.SW is USD despite .SW), Cayman and mainland-China ISINs are
+    frequently HKD rather than USD/CNY, and Johannesburg quotes arrive in cents.
+    Errors run 1.35x to 100x on exactly the magnitude the universe screen ranks by.
+    On the 3,033-stock global universe the lookup resolved every name, and found 221
+    quoted in minor units (195 GBp, 23 ZAc, 3 ILA) that inference would have
+    overstated 100-fold.
 
-    Costs one network call per symbol (~0.6-1.6s), so callers should cache the result
-    -- pipeline step 1 writes it to 01_currency.csv and step 2 only reads it.
+    **Symbol**: yfinance labels its output columns with the *input* identifier, so an
+    ISIN catalogue produces ISIN-labelled data all the way to the allocation report --
+    'US67066G1040' rather than 'NVDA', which cannot be traded against. The symbol
+    arrives in the same call as the currency, so capturing it is free.
+
+    Costs one network call per identifier (~0.6-1.6s; 46 min for 3,033 names), so
+    callers must cache: step 1 writes 01_currency.csv and step 2 only reads it.
     """
     if fetch_fn is None:
-        fetch_fn = _yf_currency
+        fetch_fn = _yf_listing
 
     rows = {}
-    for i, sym in enumerate(symbols):
-        cur, factor = normalise_currency_code(fetch_fn(sym))
+    for i, ident in enumerate(identifiers):
+        info = fetch_fn(ident) or {}
+        cur, factor = normalise_currency_code(info.get("currency"))
         source = "lookup"
         if cur is None:
-            cur, factor, source = infer_currency(sym), 1.0, "inferred"
-        rows[sym] = {"currency": cur, "unit_factor": factor, "source": source}
+            cur, factor, source = infer_currency(ident), 1.0, "inferred"
+        rows[ident] = {
+            "currency": cur,
+            "unit_factor": factor,
+            "symbol": info.get("symbol") or ident,
+            "name": info.get("shortName") or info.get("longName") or "",
+            "source": source,
+        }
         if verbose and (i + 1) % 250 == 0:
-            print(f"  currency {i + 1}/{len(symbols)}", flush=True)
+            print(f"  listing {i + 1}/{len(identifiers)}", flush=True)
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
