@@ -112,6 +112,10 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     spread = cfg.get("michaud_spread", 1.0)
     n_draws = cfg.get("michaud_mc_draws", 1000)
     seed = cfg.get("michaud_seed", 0)
+    # Opt-in analytical gradient (~4.4x faster on an 80-stock problem). Absent
+    # from params.yaml, so production keeps the historical finite-difference path;
+    # experiments/michaud_calibration.py sets it for its ~200k optimisations.
+    use_gradient = cfg.get("use_gradient", False)
 
     rng = np.random.default_rng(seed)
     draws = sample_mu_draws(returns, covmat, n_periods, n_draws, spread, rng)
@@ -122,6 +126,7 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
         arr = rk.msr_tuned(
             riskfree_rate=rf, returns=mu_i, covmat=covmat.loc[mu_i.index, mu_i.index],
             max_weight=max_w, periods_per_year=ppy, debug=False,
+            use_gradient=use_gradient,
         )
         rows.append(pd.Series(arr, index=mu_i.index))
         if (i + 1) % log_every == 0 or (i + 1) == n_draws:
