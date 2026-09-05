@@ -85,7 +85,7 @@ def _fixture(tmp_path, n_stocks=8, n_periods=521):
     volume = pd.DataFrame({c: [100.0 ** (n_stocks - i)] * n_periods
                            for i, c in enumerate(cols)}, index=idx)
     fx = pd.DataFrame({"USD": [1.0] * n_periods}, index=idx)
-    cur = pd.Series({c: "USD" for c in cols}, name="currency")
+    cur = pd.DataFrame({"currency": "USD", "unit_factor": 1.0}, index=cols)
 
     paths = {k: str(tmp_path / f"{k}.csv") for k in
              ('01_prices', '01_returns', '01_volume', '01_fx', '01_currency',

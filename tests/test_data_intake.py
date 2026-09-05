@@ -217,6 +217,49 @@ def test_infer_currency_overrides_win():
     assert di.infer_currency("CSPX.L", overrides={"CSPX.L": "USD"}) == "USD"
 
 
+def test_normalise_currency_code_handles_minor_units():
+    # Yahoo quotes LSE stocks in pence ('GBp') and Johannesburg in cents ('ZAc').
+    # Treating those as GBP/ZAR overstates the amount 100x -- catastrophic for a
+    # ranking whose whole job is comparing magnitudes across markets.
+    assert di.normalise_currency_code("GBp") == ("GBP", 0.01)
+    assert di.normalise_currency_code("ZAc") == ("ZAR", 0.01)
+    assert di.normalise_currency_code("ILA") == ("ILS", 0.01)
+    assert di.normalise_currency_code("GBP") == ("GBP", 1.0)   # case is the discriminator
+    assert di.normalise_currency_code("usd") == ("USD", 1.0)
+    assert di.normalise_currency_code(None) == (None, 1.0)
+
+
+def test_resolve_currencies_prefers_the_authoritative_lookup():
+    # Exchange suffix is only a heuristic, and it is wrong for cross-listed ETFs:
+    # CSPX.L is USD-denominated despite the .L suffix, and KY-domiciled ISINs are
+    # frequently HKD-listed. Measured 87.5% suffix/ISIN accuracy over 56 names.
+    got = di.resolve_currencies(["CSPX.L", "NVDA"],
+                                fetch_fn=lambda s: {"CSPX.L": "USD"}.get(s))
+    assert got.loc["CSPX.L", "currency"] == "USD"       # lookup beat the .L -> GBP table
+    assert got.loc["NVDA", "currency"] == "USD"
+
+
+def test_resolve_currencies_falls_back_to_inference_when_lookup_is_empty():
+    got = di.resolve_currencies(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    assert got.loc["ECOPETROL.CL", "currency"] == "COP"
+
+
+def test_resolve_currencies_records_the_minor_unit_factor():
+    got = di.resolve_currencies(["VOD.L"], fetch_fn=lambda s: "GBp")
+    assert got.loc["VOD.L", "currency"] == "GBP"
+    assert got.loc["VOD.L", "unit_factor"] == 0.01
+
+
+def test_to_hub_currency_applies_unit_factors():
+    idx = ["p1"]
+    fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
+    amounts = pd.Series({"VOD.L": 1e8, "NVDA": 1e8})
+    out = di.to_hub_currency(amounts, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
+                             unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
+    assert out["VOD.L"] == pytest.approx(1e8 * 0.01 * 1.35)   # pence, not pounds
+    assert out["NVDA"] == pytest.approx(1e8)
+
+
 def _fx_stub(pairs):
     """DI seam mirroring download_all's download_fn: {pair: value} -> fetcher."""
     def fetch(pair, index):

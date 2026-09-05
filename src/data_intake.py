@@ -205,6 +205,74 @@ def infer_currency(symbol, overrides=None):
     return "USD"
 
 
+# Quote currencies that are 1/100 of the currency FX is priced in. Yahoo returns
+# these for a large share of LSE and Johannesburg listings, and treating them as the
+# major unit overstates every amount 100x -- the single largest error available to a
+# cross-market ranking. 'GBp' vs 'GBP' differ only by case, so that pair is matched
+# case-sensitively; the others have no major-unit collision.
+_MINOR_UNITS_EXACT = {"GBp": ("GBP", 0.01)}
+_MINOR_UNITS_UPPER = {"ZAC": ("ZAR", 0.01), "ILA": ("ILS", 0.01),
+                      "KWF": ("KWD", 0.001), "MGA": ("MGA", 1.0)}
+
+
+def normalise_currency_code(raw):
+    """Map a quote-currency code to (major_currency, unit_factor).
+
+    unit_factor converts a quoted amount into the major unit, so
+    `amount_major = amount_quoted * unit_factor`. Returns (None, 1.0) for a missing
+    code so callers can distinguish "unknown" from "no scaling needed".
+    """
+    if not raw:
+        return None, 1.0
+    raw = str(raw).strip()
+    if raw in _MINOR_UNITS_EXACT:
+        return _MINOR_UNITS_EXACT[raw]
+    up = raw.upper()
+    if up in _MINOR_UNITS_UPPER:
+        return _MINOR_UNITS_UPPER[up]
+    return up, 1.0
+
+
+def _yf_currency(symbol):
+    """Authoritative quote currency for one symbol via yfinance. None if unavailable."""
+    import yfinance as yf
+    try:
+        return yf.Ticker(symbol).info.get("currency")
+    except Exception:  # noqa: BLE001 - caller falls back to inference
+        return None
+
+
+def resolve_currencies(symbols, fetch_fn=None, verbose=False):
+    """Authoritative per-symbol quote currency, falling back to infer_currency.
+
+    Returns a DataFrame indexed by symbol with columns ['currency', 'unit_factor'].
+
+    The exchange-suffix and ISIN-country tables are heuristics, and measurement puts
+    them at 87.5% over a 56-name stratified sample. The failures are not evenly
+    spread: cross-listed ETFs are systematically wrong (CSPX.L and SGLD.L are
+    USD-denominated despite .L; IUES.SW is USD despite .SW), Cayman and mainland-China
+    ISINs are frequently HKD rather than USD/CNY, and Johannesburg quotes arrive in
+    cents. Those errors range from 1.35x to 100x, all of them in the magnitude the
+    universe screen ranks on, so the lookup is worth its cost.
+
+    Costs one network call per symbol (~0.6-1.6s), so callers should cache the result
+    -- pipeline step 1 writes it to 01_currency.csv and step 2 only reads it.
+    """
+    if fetch_fn is None:
+        fetch_fn = _yf_currency
+
+    rows = {}
+    for i, sym in enumerate(symbols):
+        cur, factor = normalise_currency_code(fetch_fn(sym))
+        source = "lookup"
+        if cur is None:
+            cur, factor, source = infer_currency(sym), 1.0, "inferred"
+        rows[sym] = {"currency": cur, "unit_factor": factor, "source": source}
+        if verbose and (i + 1) % 250 == 0:
+            print(f"  currency {i + 1}/{len(symbols)}", flush=True)
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 def _default_fx_fetch(pair, index):
     """Download one Yahoo FX pair and align it to `index`. Returns None if unavailable."""
     import yfinance as yf
@@ -267,22 +335,29 @@ def fetch_fx_rates(currencies, index, hub="USD", fetch_fn=None):
     return pd.DataFrame(out, index=index)
 
 
-def to_hub_currency(amounts, cur_map, fx, when=-1):
+def to_hub_currency(amounts, cur_map, fx, when=-1, unit_factors=None):
     """Convert a per-ticker Series of local-currency magnitudes into the hub currency.
 
     amounts: Series indexed by ticker.  cur_map: {ticker: currency}.
     fx: DataFrame from fetch_fx_rates.  when: row of `fx` to use (default: last).
+    unit_factors: optional {ticker: factor} for minor-unit quotes (pence, cents) --
+        see normalise_currency_code. Absent, every quote is assumed to be in the
+        major unit, which overstates pence-quoted names 100x.
 
     Tickers whose currency is unknown or unpriced are dropped, not passed through --
     see infer_currency for why silence is the failure mode that matters here.
     """
     rates = fx.iloc[when]
-    factors = pd.Series(
-        {t: rates.get(cur_map.get(t)) for t in amounts.index}, dtype="float64")
-    return (amounts * factors).dropna()
+    scale = pd.Series(
+        {t: (rates.get(cur_map.get(t))
+             * (1.0 if unit_factors is None else unit_factors.get(t, 1.0))
+             if cur_map.get(t) in rates.index else None)
+         for t in amounts.index}, dtype="float64")
+    return (amounts * scale).dropna()
 
 
-def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None):
+def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None,
+                      unit_factors=None):
     """Mean of (Close * Volume) over `window` periods, per ticker. NaN treated as 0.
 
     fx/cur_map: when both are supplied, the result is converted into the hub currency
@@ -302,7 +377,7 @@ def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None):
         dv = dv.iloc[:pos]
     adv = dv.iloc[-window:].mean(axis=0)
     if fx is not None and cur_map is not None:
-        adv = to_hub_currency(adv, cur_map, fx)
+        adv = to_hub_currency(adv, cur_map, fx, unit_factors=unit_factors)
     return adv
 
 
@@ -374,7 +449,7 @@ def _stratified_pick(ranked, topn, strata):
 
 def select_universe(close, volume, topn, *, strata=None, window=None,
                     price_floor=0.0, min_active_fraction=0.0,
-                    fx=None, cur_map=None, as_of=None,
+                    fx=None, cur_map=None, as_of=None, unit_factors=None,
                     market_cap=None, min_market_cap=None):
     """Choose which tickers to model. Returns a list of column names.
 
@@ -426,7 +501,8 @@ def select_universe(close, volume, topn, *, strata=None, window=None,
         return []
 
     adv = avg_dollar_volume(close[eligible], volume[eligible], window,
-                            fx=fx, cur_map=cur_map, as_of=as_of)
+                            fx=fx, cur_map=cur_map, as_of=as_of,
+                            unit_factors=unit_factors)
     ranked = list(adv.sort_values(ascending=False).index)   # unknown currency dropped
 
     if len(ranked) <= topn:

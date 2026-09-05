@@ -63,13 +63,17 @@ def main():
     # path is byte-identical to the pre-screen pipeline.
     if cfg.get('universe_topn'):
         volume = pd.read_csv(PATHS['01_volume'], index_col=0)
-        fx      = pd.read_csv(PATHS['01_fx'], index_col=0)
-        cur_map = pd.read_csv(PATHS['01_currency'], index_col=0)['currency'].to_dict()
+        fx     = pd.read_csv(PATHS['01_fx'], index_col=0)
+        cur_df = pd.read_csv(PATHS['01_currency'], index_col=0)
+        cur_map = cur_df['currency'].to_dict()
+        # unit_factor rescales pence/cents quotes; absent in pre-minor-unit caches.
+        unit_factors = (cur_df['unit_factor'].to_dict()
+                        if 'unit_factor' in cur_df.columns else None)
         universe = select_universe(
             prices, volume, cfg['universe_topn'],
             strata=cfg.get('universe_strata'),
             price_floor=cfg.get('universe_price_floor', 0.0),
-            fx=fx, cur_map=cur_map,
+            fx=fx, cur_map=cur_map, unit_factors=unit_factors,
         )
         print(f"Universe screen: {len(universe)} of {prices.shape[1]} stocks "
               f"(topn={cfg['universe_topn']}, strata={cfg.get('universe_strata')})")
