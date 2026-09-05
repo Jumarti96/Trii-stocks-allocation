@@ -41,7 +41,7 @@ def _cov(sigmas, corr=0.0):
 # --- schedule -------------------------------------------------------------
 
 def test_schedule_cadence_equal_to_horizon_matches_existing_study():
-    # The michaud_calibration run used 13 splits ending at 521-24.
+    # 521 weekly periods with a 200-period burn-in gives 13 splits, last at 521-24.
     s = rebalance_schedule(n_periods=521, cadence=24, horizon=24, min_train=200)
     assert len(s) == 13
     assert s[-1] == 521 - 24

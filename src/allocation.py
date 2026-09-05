@@ -161,7 +161,7 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     seed = cfg.get("michaud_seed", 0)
     # Opt-in analytical gradient (~4.4x faster on an 80-stock problem). Absent
     # from params.yaml, so production keeps the historical finite-difference path;
-    # experiments/michaud_calibration.py sets it for its ~200k optimisations.
+    # experiments/backtest.py sets it for its bulk optimisations.
     use_gradient = cfg.get("use_gradient", False)
 
     rng = np.random.default_rng(seed)

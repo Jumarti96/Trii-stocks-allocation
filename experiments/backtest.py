@@ -16,7 +16,7 @@ Answers two questions with one engine:
 Statistical note: all comparisons are PAIRED. Two long-only books from the same
 universe are ~98% correlated, so comparing return levels reads a small effect
 through the market's much larger swings. Differencing period-by-period cancels the
-common move -- on the michaud study that cut the sd from 0.159 to 0.049.
+common move -- measured here, that cuts the sd from 0.159 to 0.049.
 
 Power note: splitting a fixed calendar span into shorter windows does NOT add
 power. Effect scales with window length h, sd with sqrt(h), N with 1/h, so
@@ -58,7 +58,6 @@ COST_ROUND_TRIP = 0.005
 N_RANDOM = 500           # random books drawn per window for the luck control
 MOMENTUM_LOOKBACK = 24
 _OUT_DIR = os.path.join(_HERE, "results", "backtest")
-_DOC_PATH = os.path.join(_HERE, "..", "docs", "experiments", "backtest.md")
 _BENCH_PATH = os.path.join(_HERE, "..", "data", "01_benchmark.csv")
 
 
@@ -248,44 +247,27 @@ def summarise(raw, cfg, baseline):
 # Harness
 # ---------------------------------------------------------------------------
 
-def write_outputs(raw, summary, out_dir, doc_path, cfg, cadences, baseline):
+def write_outputs(raw, summary, out_dir, cfg, cadences, baseline):
     os.makedirs(out_dir, exist_ok=True)
     raw.to_csv(os.path.join(out_dir, 'raw.csv'), index=False)
     summary.to_csv(os.path.join(out_dir, 'summary.csv'), index=False)
-    os.makedirs(os.path.dirname(doc_path), exist_ok=True)
 
-    lines = [
-        "# Backtest: model vs naive alternatives", "",
-        f"Walk-forward, cadences {cadences}, baseline `{baseline}`, "
-        f"arch `{cfg['transformer_arch']}`, loss `{cfg['transformer_loss']}`.", "",
-        "All comparisons are **paired** per rebalance window: the books are ~98%",
-        "correlated, so differencing cancels the market move and leaves the",
-        "strategy effect. `vs_*` columns are against the baseline.", "",
-        "## Results", "", "```", summary.to_string(index=False), "```", "",
-        "## How to read this", "",
-        "- **`random_pct`** is the headline for *is the model useful*: the mean",
-        "  percentile of the strategy within a distribution of random books of the",
-        "  same size. 0.5 means indistinguishable from picking at random.",
-        "- **`gmv`** uses only the covariance and ignores the forecast. If it",
-        "  matches the model, the transformer contributes nothing and the value is",
-        "  in the Ledoit-Wolf estimate.",
-        "- **`n_for_80_power`** is how many windows would be needed to call the",
-        "  paired difference significant at the observed effect size.", "",
-        "## Limitations", "",
-        "- **Survivorship.** The universe is today's Trii catalogue filtered to full",
-        "  history, so everything that delisted is absent. This flatters a",
-        "  stock-picking strategy more than it flatters equal-weight.",
-        "- **One regime.** Every window is post-2020 and mostly rising.",
-        "- **No FX.** `01_download.py` takes `pct_change()` on native-currency",
-        "  prices; COP, USD, CLP and CHF are summed as one unit. The S&P 500 row is",
-        "  approximate, and US holdings' true COP returns were higher than shown.",
-        "- **Power is bounded by calendar span**, not window count: shorter cadence",
-        "  gives more windows but proportionally less signal in each.", "",
-        "---",
-        "Committed here because `.gitignore:31` excludes `experiments/results/`.",
-    ]
-    with open(doc_path, 'w', encoding='utf-8') as f:
-        f.write("\n".join(lines) + "\n")
+    # Results are deliberately NOT written to a tracked file. A markdown report in
+    # the working tree looks current no matter how stale it is, so it misleads once
+    # the model moves on. When a run drives a decision, record the numbers in the
+    # commit message that changes params.yaml -- git history is timestamped and
+    # immutable, so it reads unambiguously as "true as of this date".
+    print("\nCaveats that apply to every number above:")
+    for line in (
+        "survivorship -- universe is today's catalogue filtered to full history,",
+        "               so delisted names are absent; flatters stock-picking",
+        "one regime   -- windows are post-2020 and mostly rising",
+        "no FX        -- 01_download.py takes pct_change() on native-currency",
+        "               prices; COP, USD, CLP, CHF summed as one unit",
+        "power        -- bounded by calendar span, not window count: shorter",
+        "               cadence gives more windows, proportionally less signal",
+    ):
+        print(f"  {line}")
 
 
 def main():
@@ -340,11 +322,11 @@ def main():
 
     raw = pd.concat(frames, ignore_index=True)
     summary = summarise(raw, cfg, args.baseline)
-    write_outputs(raw, summary, _OUT_DIR, _DOC_PATH, cfg, cadences, args.baseline)
+    write_outputs(raw, summary, _OUT_DIR, cfg, cadences, args.baseline)
 
     print("\n" + "=" * 100)
     print(summary.to_string(index=False))
-    print(f"\nSaved: {_OUT_DIR}\n       {_DOC_PATH}")
+    print(f"\nSaved: {_OUT_DIR}")
 
 
 if __name__ == '__main__':

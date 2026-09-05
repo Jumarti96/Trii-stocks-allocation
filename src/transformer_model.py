@@ -291,12 +291,12 @@ def rank_ic_loss(pred, target, sigma=None, mu=None):
 
     Optimises the ordering of stocks rather than the accuracy of their levels,
     matching what the pipeline actually consumes: 03_allocate.py ranks by Sharpe
-    and keeps the top N, and arch_comparison.py scores Spearman rank IC.
+    and keeps the top N, and the backtester scores cross-sectional rank IC.
 
     pred/target: (batch, decode_steps, n_stocks) for direct multistep archs, or
         (batch, n_stocks) for autoregressive archs. Multistep inputs are summed
-        over the decode axis first, matching arch_comparison.py's
-        `pred_cum = preds_mean[:h].sum(axis=0)`.
+        over the decode axis first, so the ranked quantity is the cumulative
+        return actually held.
     sigma/mu: per-stock Z-score constants from _normalise. When supplied, the
         cumulative returns are denormalised so ranking happens in real return
         space; ranking normalised values would instead order stocks by standard

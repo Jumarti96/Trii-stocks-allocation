@@ -18,8 +18,8 @@ Two things here are deliberately separated that the pipeline conflates:
 Statistical note: comparisons are PAIRED. Two long-only books drawn from the same
 universe are ~98% correlated, so comparing return levels means reading a small
 effect through the market's much larger swings. Differencing period-by-period
-cancels the common move; on the michaud study that cut the standard deviation
-from 0.159 to 0.049.
+cancels the common move; measured on this universe that cut the standard
+deviation of the comparison from 0.159 to 0.049, a ~10x variance reduction.
 """
 
 import numpy as np
@@ -173,7 +173,7 @@ def paired_comparison(strategy, baseline):
 
 
 # ---------------------------------------------------------------------------
-# Portfolio mechanics (shared with experiments/michaud_calibration.py)
+# Portfolio mechanics
 # ---------------------------------------------------------------------------
 
 def _cap(weights, max_weight, tol=1e-12, max_passes=100):

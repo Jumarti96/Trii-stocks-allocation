@@ -31,7 +31,7 @@ michaud_spread: 2.0                      # s; draw scale on Sigma/T. Lowered fro
                                          # (different seeds, two cadences). s=1 topped every run but is
                                          # statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break —
                                          # it holds more names and degrades more gracefully if forecasts
-                                         # deteriorate. See docs/experiments/backtest.md.
+                                         # deteriorate. Re-run: experiments/backtest.py --cadence 12,24.
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
 michaud_seed: 0                          # int = reproducible; null = fresh draws
 rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
@@ -45,12 +45,18 @@ output_path: "results/allocation_output.csv"
 # Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
 
 # Transformer model internals — do not change without a deep understanding of the model.
-transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step). Default: B.
+transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step).
+                                    # B chosen over current/A_surgical/B_4/C_crosssectional on a
+                                    # walk-forward rank-IC study (30 blocks x 3 seeds, commit e90abda).
 transformer_loss: rank_ic           # 'rank_ic' (cross-sectional ranking objective) | 'auto' (legacy MSE/Huber).
                                     # rank_ic optimises the ordering the optimiser actually consumes; it is
                                     # scale-free, so watch the scale ratio printed per training run.
-transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
+transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year.
+                                    # 24 validated in the same arch study as transformer_arch.
 n_transformer_runs: 150             # Independent training runs; predictions are averaged.
+                                    # 150 from a convergence study: top-N selection stopped changing
+                                    # past ~150 runs (commit 3096393). Backtests use 50, where mu
+                                    # dispersion is within ~1% of the 150-run value.
 time_window: null                   # Input sequence length; null -> periods_per_year.
 liquidity_window_fraction: 0.10       # lookback = last 10% of the time-series (proportional to download horizon)
 liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of the lookback window
