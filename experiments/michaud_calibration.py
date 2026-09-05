@@ -1,4 +1,4 @@
-"""
+﻿"""
 michaud_spread calibration study.
 
 michaud_spread=4.0 was selected for the old configuration (Huber loss,
@@ -54,150 +54,29 @@ _DOC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
 
 
 # ---------------------------------------------------------------------------
-# Pure helpers
+# Pure helpers live in src/backtesting.py so experiments/backtest.py can share
+# them. Re-exported here to keep this study's call sites and tests unchanged.
 # ---------------------------------------------------------------------------
 
+from backtesting import (            # noqa: E402
+    turnover,
+    drift_weights,
+    realised_returns,
+    effective_n,
+    regime_tertiles,
+    downside_deviation,
+    max_drawdown,
+    bootstrap_best_spread,
+    annual_cost_drag,
+    net_of_cost_sharpe,
+    rebalance_schedule,
+)
+
+
 def rebalance_splits(n_periods, horizon, min_train):
-    """Split indices for non-overlapping rebalances, anchored at the end.
-
-    Anchoring from the end keeps the most recent regime in the sample. Every
-    returned split has `horizon` periods of forward data available.
-    Returns an ascending list; empty when history is too short.
-    """
-    splits = []
-    s = n_periods - horizon
-    while s >= min_train:
-        splits.append(s)
-        s -= horizon
-    return splits[::-1]
-
-
-def turnover(w_prev, w_new):
-    """One-way turnover: 0.5 * sum |w_new - w_prev| over the union of holdings.
-
-    0.0 for identical books, 1.0 for fully disjoint ones.
-    """
-    idx = w_prev.index.union(w_new.index)
-    a = w_prev.reindex(idx).fillna(0.0)
-    b = w_new.reindex(idx).fillna(0.0)
-    return float(0.5 * (b - a).abs().sum())
-
-
-def drift_weights(weights, fwd_rets):
-    """Weights after holding through fwd_rets without rebalancing.
-
-    Turnover measured against drifted weights is the figure that costs money:
-    part of the gap to the next target closes on its own as prices move.
-    """
-    growth = (1 + fwd_rets[weights.index]).prod()
-    grown = weights * growth
-    return grown / grown.sum()
-
-
-def realised_returns(weights, fwd_rets):
-    """Buy-and-hold portfolio return series over the holding period.
-
-    Weights are set once and allowed to drift, matching how the book is
-    actually held between rebalances. Names not held are ignored.
-    """
-    wealth = (1 + fwd_rets[weights.index]).cumprod()
-    value = (wealth * weights).sum(axis=1)
-    prev = value.shift(1).fillna(weights.sum())
-    return value / prev - 1
-
-
-def effective_n(weights):
-    """Inverse Herfindahl: the number of equally weighted names this book resembles."""
-    w = weights[weights > 0]
-    return float(1.0 / (w ** 2).sum())
-
-
-def regime_tertiles(dates):
-    """Split an ordered date list into 3 contiguous, time-ordered groups."""
-    n = len(dates)
-    c1, c2 = n // 3, 2 * n // 3
-    return [dates[:c1], dates[c1:c2], dates[c2:]]
-
-
-def downside_deviation(returns, target=0.0):
-    """RMS of shortfalls below `target`; upside contributes nothing.
-
-    Michaud resampling buys robustness to estimation error, which shows up in the
-    bad periods rather than the average. Symmetric vol charges a portfolio for
-    large gains too, so it cannot see that benefit.
-    """
-    short = np.minimum(np.asarray(returns, dtype=float) - target, 0.0)
-    return float(np.sqrt((short ** 2).mean()))
-
-
-def max_drawdown(returns):
-    """Deepest peak-to-trough decline of the compounded series (<= 0)."""
-    wealth = (1 + pd.Series(list(returns))).cumprod()
-    return float((wealth / wealth.cummax() - 1).min())
-
-
-def bootstrap_best_spread(period_returns, turnovers, rf, cost, periods_per_year,
-                          horizon, n_boot=2000, seed=0):
-    """How often each spread wins on net Sharpe, resampling the rebalance periods.
-
-    period_returns / turnovers: DataFrames indexed by rebalance, columns = spreads.
-
-    With only ~13 rebalances, the gap between adjacent spreads can easily be
-    noise. Resampling the SAME period indices across every spread keeps the
-    comparison paired, so this measures whether one setting genuinely beats
-    another rather than whether the sample happened to be kind to it.
-
-    Returns (P(best) per spread, standard error of net Sharpe per spread). A
-    diffuse P means the data cannot separate the settings, and no single value
-    should be recommended.
-    """
-    rng = np.random.default_rng(seed)
-    cols = list(period_returns.columns)
-    n = len(period_returns)
-    rets = period_returns[cols].to_numpy(dtype=float)
-    turn = turnovers[cols].to_numpy(dtype=float)
-
-    wins = np.zeros(len(cols))
-    sharpes = np.empty((n_boot, len(cols)))
-    for b in range(n_boot):
-        idx = rng.integers(0, n, n)          # same draw for every spread: paired
-        r, t = rets[idx], turn[idx]
-        ann = np.prod(1 + r, axis=0) ** (periods_per_year / (n * horizon)) - 1
-        vol = r.std(axis=0, ddof=0) * np.sqrt(periods_per_year / horizon)
-        net = ann - annual_cost_drag(t.mean(axis=0), cost, periods_per_year, horizon)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            s = np.where(vol > 0, (net - rf) / vol, np.nan)
-        sharpes[b] = s
-        if not np.all(np.isnan(s)):
-            # Break ties at random. np.nanargmax always returns the first index,
-            # which would report indistinguishable settings as a clean winner --
-            # precisely the false confidence this bootstrap exists to detect.
-            tied = np.flatnonzero(np.isclose(s, np.nanmax(s), rtol=1e-12, atol=1e-15))
-            wins[tied[0] if len(tied) == 1 else rng.choice(tied)] += 1
-
-    return (pd.Series(wins / n_boot, index=cols),
-            pd.Series(np.nanstd(sharpes, axis=0, ddof=1), index=cols))
-
-
-def annual_cost_drag(mean_turnover, cost, periods_per_year, horizon):
-    """Annual return give-up from trading: turnover x cost x rebalances per year."""
-    return mean_turnover * cost * (periods_per_year / horizon)
-
-
-def net_of_cost_sharpe(ann_return, ann_vol, mean_turnover, rf, cost,
-                       periods_per_year, horizon):
-    """Sharpe after charging turnover at `cost` per unit.
-
-    Realised vol and turnover both fall monotonically in michaud_spread, so
-    neither can select an optimum on its own -- both rules degenerate to an
-    endpoint. Charging turnover against gross return creates a genuine interior
-    optimum, and it is the quantity that actually determines what the strategy
-    earns.
-    """
-    if ann_vol <= 0 or np.isnan(ann_vol):
-        return float('nan')
-    net = ann_return - annual_cost_drag(mean_turnover, cost, periods_per_year, horizon)
-    return (net - rf) / ann_vol
+    """This study rebalances at its forecast horizon, so cadence == horizon."""
+    return rebalance_schedule(n_periods, cadence=horizon, horizon=horizon,
+                              min_train=min_train)
 
 
 # ---------------------------------------------------------------------------
