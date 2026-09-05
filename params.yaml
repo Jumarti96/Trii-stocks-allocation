@@ -20,8 +20,18 @@ periods_to_forecast: 24       # How many periods ahead to predict, and the horiz
 # Portfolio optimisation (Step 4)
 allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)
 allocation_ranking: sharpe   # "sharpe" (mu/sigma) | "return" (mu only)
-allocation_method: parametric_michaud   # "parametric_michaud" | "msr"
-michaud_spread: 4.0                      # s; draw scale on Sigma/T (4.0 = "s4", deployed: most consistent across regimes, lower vol/turnover)
+allocation_method: parametric_michaud   # "parametric_michaud" | "msr" | "equal_weight_topn"
+                                        # equal_weight_topn drops the optimiser and equal-weights the
+                                        # top equal_weight_n candidates. It matched parametric_michaud in
+                                        # the backtest (net Sharpe 1.132 vs 1.131, head-to-head p=0.949),
+                                        # so it is available for comparison; michaud remains the default.
+# equal_weight_n: 12                    # names held by equal_weight_topn; default = 1/min_weight
+michaud_spread: 2.0                      # s; draw scale on Sigma/T. Lowered from 4.0: s in {0,1,2} ranked
+                                         # above {4,6,8} identically across three independent backtest runs
+                                         # (different seeds, two cadences). s=1 topped every run but is
+                                         # statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break —
+                                         # it holds more names and degrades more gracefully if forecasts
+                                         # deteriorate. See docs/experiments/backtest.md.
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
 michaud_seed: 0                          # int = reproducible; null = fresh draws
 rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)

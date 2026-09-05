@@ -205,6 +205,42 @@ def select_top_n(mu, covmat, n, metric="sharpe"):
     return mu[top], covmat.loc[top, top]
 
 
+def equal_weight_topn_alloc(returns, covmat, cfg):
+    """Equal weights across the top-n candidates. No optimiser, no covariance.
+
+    Included because it matched the Michaud consensus in the walk-forward backtest
+    (net Sharpe 1.132 vs 1.131 at 24-week cadence; head-to-head p=0.949), which
+    suggests the edge lives in the forecast's stock selection rather than in how
+    the optimiser weights it. See docs/experiments/backtest.md.
+
+    Reads cfg['equal_weight_n'] (defaults to the most diversified book the
+    min_weight floor allows) and ranks by cfg['allocation_ranking'], reusing
+    select_top_n so selection matches the pipeline's pre-filter exactly.
+    """
+    min_w, max_w = cfg["min_weight"], cfg["max_weight"]
+    n = cfg.get("equal_weight_n")
+    if not n:
+        # Default: the most diversified book the min_weight floor permits.
+        n = int(1.0 / min_w) if min_w > 0 else len(returns)
+    n = min(n, len(returns))          # asking for more names than exist is not an error
+
+    weight = 1.0 / n
+    if weight > max_w + 1e-12:
+        raise ValueError(
+            f"equal_weight_n={n} gives {weight:.4f} per name, above "
+            f"max_weight={max_w}. Need at least {int(np.ceil(1.0 / max_w))} names.")
+    if min_w > 0 and weight < min_w - 1e-12:
+        raise ValueError(
+            f"equal_weight_n={n} gives {weight:.4f} per name, below "
+            f"min_weight={min_w}. Use at most {int(1.0 / min_w)} names.")
+
+    mu_top, _ = select_top_n(returns, covmat, n,
+                             cfg.get("allocation_ranking", "sharpe"))
+    weights = pd.Series(0.0, index=returns.index)
+    weights[mu_top.index] = 1.0 / len(mu_top)
+    return weights
+
+
 def allocate(returns, covmat, cfg, n_periods):
     """Dispatch to the configured allocation method (cfg['allocation_method'])."""
     method = cfg.get("allocation_method", "parametric_michaud")
@@ -212,4 +248,6 @@ def allocate(returns, covmat, cfg, n_periods):
         return msr_eliminate(returns, covmat, cfg)
     if method == "parametric_michaud":
         return resampled_michaud(returns, covmat, cfg, n_periods)
+    if method == "equal_weight_topn":
+        return equal_weight_topn_alloc(returns, covmat, cfg)
     raise ValueError(f"unknown allocation_method: {method!r}")
