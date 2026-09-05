@@ -269,12 +269,12 @@ def test_resolve_listings_falls_back_to_the_identifier_as_symbol():
     assert got.loc["ECOPETROL.CL", "symbol"] == "ECOPETROL.CL"
 
 
-def test_to_hub_currency_applies_unit_factors():
+def test_convert_currency_applies_unit_factors():
     idx = ["p1"]
     fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
     amounts = pd.Series({"VOD.L": 1e8, "NVDA": 1e8})
-    out = di.to_hub_currency(amounts, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
-                             unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
+    out = di.convert_currency(amounts, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
+                              unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
     assert out["VOD.L"] == pytest.approx(1e8 * 0.01 * 1.35)   # pence, not pounds
     assert out["NVDA"] == pytest.approx(1e8)
 
@@ -313,14 +313,64 @@ def test_fetch_fx_rates_raises_when_a_pair_is_unavailable():
         di.fetch_fx_rates(["CLP"], ["p1"], hub="USD", fetch_fn=_fx_stub({}))
 
 
-def test_to_hub_currency_scales_amounts_by_rate():
+def test_convert_currency_scales_amounts_by_rate():
     idx = ["p1", "p2"]
     fx = pd.DataFrame({"USD": [1.0, 1.0], "COP": [0.00025, 0.00025]}, index=idx)
     amounts = pd.Series({"NVDA": 1e9, "ECOPETROL.CL": 1e9})
     cur_map = {"NVDA": "USD", "ECOPETROL.CL": "COP"}
-    out = di.to_hub_currency(amounts, cur_map, fx)
+    out = di.convert_currency(amounts, cur_map, fx)          # target=None -> the hub
     assert out["NVDA"] == pytest.approx(1e9)          # already USD
     assert out["ECOPETROL.CL"] == pytest.approx(250_000.0)   # 1e9 COP -> 250k USD
+
+
+def test_convert_currency_to_an_arbitrary_target():
+    # The report is denominated in the user's own currency, not the FX hub. The hub
+    # cancels: rate = fx[local] / fx[target].
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0], "COP": [0.00025]}, index=idx)
+    out = di.convert_currency(pd.Series({"NVDA": 100.0}), {"NVDA": "USD"}, fx,
+                              target="COP")
+    assert out["NVDA"] == pytest.approx(400_000.0)    # $100 at 4000 COP/USD
+
+
+def test_convert_currency_target_equal_to_source_is_identity():
+    idx = ["p1"]
+    fx = pd.DataFrame({"COP": [0.00025]}, index=idx)
+    out = di.convert_currency(pd.Series({"ECO.CL": 2700.0}), {"ECO.CL": "COP"}, fx,
+                              target="COP")
+    assert out["ECO.CL"] == pytest.approx(2700.0)
+
+
+@pytest.mark.parametrize("policy,expected", [
+    ("exclude", None),          # dropped
+    ("assume_target", 500.0),   # taken at face value in the target currency
+])
+def test_convert_currency_unknown_policy(policy, expected):
+    # Robustness: an unresolvable currency must not crash the run. Excluding is the
+    # default because assuming the wrong one is how a JPY name gets ranked 150x too
+    # high -- the exact failure the currency work exists to prevent.
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0]}, index=idx)
+    out = di.convert_currency(pd.Series({"MYSTERY": 500.0}), {"MYSTERY": None}, fx,
+                              target="USD", unknown=policy)
+    if expected is None:
+        assert "MYSTERY" not in out.index
+    else:
+        assert out["MYSTERY"] == pytest.approx(expected)
+
+
+def test_convert_currency_rejects_an_unknown_policy_name():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="unknown_currency"):
+        di.convert_currency(pd.Series({"A": 1.0}), {"A": None}, fx, unknown="whatever")
+
+
+def test_convert_currency_excludes_a_currency_missing_from_fx():
+    # Currency resolved, but no FX rate for it -- must behave like any other unknown
+    # rather than raising a KeyError mid-report.
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    out = di.convert_currency(pd.Series({"A": 5.0}), {"A": "XYZ"}, fx, target="USD")
+    assert "A" not in out.index
 
 
 def _universe(n, periods=8):

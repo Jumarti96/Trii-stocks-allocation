@@ -350,29 +350,55 @@ def fetch_fx_rates(currencies, index, hub="USD", fetch_fn=None):
     return pd.DataFrame(out, index=index)
 
 
-def to_hub_currency(amounts, cur_map, fx, when=-1, unit_factors=None):
-    """Convert a per-ticker Series of local-currency magnitudes into the hub currency.
+UNKNOWN_CURRENCY_POLICIES = ("exclude", "assume_target")
+
+
+def convert_currency(amounts, cur_map, fx, target=None, when=-1, unit_factors=None,
+                     unknown="exclude"):
+    """Convert per-ticker local-currency amounts into `target`.
 
     amounts: Series indexed by ticker.  cur_map: {ticker: currency}.
-    fx: DataFrame from fetch_fx_rates.  when: row of `fx` to use (default: last).
+    fx: DataFrame from fetch_fx_rates, whose values are "units of the hub per 1 unit
+        of the column currency".
+    target: currency to convert into; None means the fx hub itself. The hub cancels,
+        so the rate is simply fx[local] / fx[target].
+    when: row of `fx` to use (default: last).
     unit_factors: optional {ticker: factor} for minor-unit quotes (pence, cents) --
-        see normalise_currency_code. Absent, every quote is assumed to be in the
-        major unit, which overstates pence-quoted names 100x.
+        see normalise_currency_code. Absent, every quote is assumed to be in the major
+        unit, which overstates pence-quoted names 100x.
+    unknown: what to do with a ticker whose currency is unresolved or has no FX rate.
+        'exclude' (default) drops it; 'assume_target' takes the number at face value
+        as though already denominated in `target`.
 
-    Tickers whose currency is unknown or unpriced are dropped, not passed through --
-    see infer_currency for why silence is the failure mode that matters here.
+    'exclude' is the default because guessing is how a JPY-quoted name gets ranked
+    ~150x too high -- the precise failure this module's currency handling exists to
+    prevent. 'assume_target' is offered so a single unresolvable ticker cannot abort a
+    run, but it trades a visible gap for an invisible error, so callers should report
+    how many names it touched.
     """
+    if unknown not in UNKNOWN_CURRENCY_POLICIES:
+        raise ValueError(
+            f"unknown_currency policy must be one of {UNKNOWN_CURRENCY_POLICIES}, "
+            f"got {unknown!r}")
+
     rates = fx.iloc[when]
-    scale = pd.Series(
-        {t: (rates.get(cur_map.get(t))
-             * (1.0 if unit_factors is None else unit_factors.get(t, 1.0))
-             if cur_map.get(t) in rates.index else None)
-         for t in amounts.index}, dtype="float64")
-    return (amounts * scale).dropna()
+    denom = 1.0 if target is None else float(rates[target])
+
+    scale = {}
+    for t in amounts.index:
+        cur = cur_map.get(t)
+        factor = 1.0 if unit_factors is None else unit_factors.get(t, 1.0)
+        if cur in rates.index:
+            scale[t] = float(rates[cur]) * factor / denom
+        elif unknown == "assume_target":
+            scale[t] = factor
+        else:
+            scale[t] = None
+    return (amounts * pd.Series(scale, dtype="float64")).dropna()
 
 
 def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None,
-                      unit_factors=None):
+                      unit_factors=None, unknown="exclude"):
     """Mean of (Close * Volume) over `window` periods, per ticker. NaN treated as 0.
 
     fx/cur_map: when both are supplied, the result is converted into the hub currency
@@ -392,7 +418,8 @@ def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None,
         dv = dv.iloc[:pos]
     adv = dv.iloc[-window:].mean(axis=0)
     if fx is not None and cur_map is not None:
-        adv = to_hub_currency(adv, cur_map, fx, unit_factors=unit_factors)
+        adv = convert_currency(adv, cur_map, fx, unit_factors=unit_factors,
+                               unknown=unknown)
     return adv
 
 
@@ -465,7 +492,7 @@ def _stratified_pick(ranked, topn, strata):
 def select_universe(close, volume, topn, *, strata=None, window=None,
                     price_floor=0.0, min_active_fraction=0.0,
                     fx=None, cur_map=None, as_of=None, unit_factors=None,
-                    market_cap=None, min_market_cap=None):
+                    unknown="exclude", market_cap=None, min_market_cap=None):
     """Choose which tickers to model. Returns a list of column names.
 
     Two phases: hard eligibility gates, then a liquidity ranking with an optional
@@ -517,7 +544,7 @@ def select_universe(close, volume, topn, *, strata=None, window=None,
 
     adv = avg_dollar_volume(close[eligible], volume[eligible], window,
                             fx=fx, cur_map=cur_map, as_of=as_of,
-                            unit_factors=unit_factors)
+                            unit_factors=unit_factors, unknown=unknown)
     ranked = list(adv.sort_values(ascending=False).index)   # unknown currency dropped
 
     if len(ranked) <= topn:

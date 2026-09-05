@@ -61,12 +61,31 @@ michaud_spread: 2.0                      # s; draw scale on Sigma/T. Lowered fro
                                          # deteriorate. Re-run: experiments/backtest.py --cadence 12,24.
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
 michaud_seed: 0                          # int = reproducible; null = fresh draws
-rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
+rf_rate: 0.11                 # Risk-free rate, in report_currency terms. 0.11 is the
+                              # 10-Y Colombian bond yield (~11.2%). CHANGE THIS if you
+                              # change report_currency -- a EUR investor comparing
+                              # against an 11% COP hurdle will reject every portfolio.
 max_weight: 0.15              # Maximum portfolio weight per stock
 min_weight: 0.05              # Minimum portfolio weight per stock
 
 # Output (Step 5)
-investment_cop: 120000000     # Total capital available (COP)
+# >>> NEW USERS: set report_currency and rf_rate to YOUR currency before running. <<<
+# The defaults are Colombian because that is where this pipeline started; nothing
+# about the model assumes it. Stock prices arrive in whatever currency each exchange
+# quotes (USD for NVDA, JPY for Toyota, GBp for most of the LSE), and the report
+# converts them all into report_currency so the table is comparable and share counts
+# are meaningful.
+investment: 120000000         # Total capital available, denominated in report_currency
+report_currency: COP          # ISO code the final report is denominated in: prices,
+                              # investment amounts and share counts. Must be a currency
+                              # reachable from the FX data (any of the listing
+                              # currencies, or one Yahoo quotes against USD).
+unknown_currency: exclude     # what to do with a stock whose quote currency cannot be
+                              # resolved: "exclude" drops it, "assume_target" takes its
+                              # price at face value as already being in report_currency.
+                              # exclude is the default because guessing wrong is how a
+                              # JPY-quoted name gets valued ~150x too high; a wrong
+                              # number is worse than a missing one.
 output_path: "results/allocation_output.csv"
 
 # Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)

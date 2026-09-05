@@ -96,6 +96,33 @@ def _resolve_universe_config(cfg):
     return cfg
 
 
+def _resolve_report_config(cfg):
+    """Apply reporting-currency defaults and validate them.
+
+    `investment` is denominated in `report_currency`, so the two travel together.
+    """
+    if 'investment_cop' in cfg and 'investment' not in cfg:
+        raise ValueError(
+            "params.yaml uses 'investment_cop', which was renamed to 'investment' "
+            "and paired with 'report_currency' so the pipeline is not hardcoded to "
+            "Colombian pesos. Rename the key and add e.g. 'report_currency: COP'.")
+
+    cfg.setdefault('investment', 0)
+    cfg.setdefault('report_currency', 'COP')
+    cfg.setdefault('unknown_currency', 'exclude')
+
+    if cfg['unknown_currency'] not in ('exclude', 'assume_target'):
+        raise ValueError(
+            f"unknown_currency must be 'exclude' or 'assume_target', "
+            f"got {cfg['unknown_currency']!r}")
+    if not isinstance(cfg['report_currency'], str) or len(cfg['report_currency']) != 3:
+        raise ValueError(
+            f"report_currency must be a 3-letter ISO code, "
+            f"got {cfg['report_currency']!r}")
+    cfg['report_currency'] = cfg['report_currency'].upper()
+    return cfg
+
+
 def load_config(config_path=None):
     """Load params.yaml and return a config dict with derived values added."""
     if config_path is None:
@@ -115,5 +142,6 @@ def load_config(config_path=None):
 
     cfg = _resolve_transformer_config(cfg)
     cfg = _resolve_universe_config(cfg)
+    cfg = _resolve_report_config(cfg)
 
     return cfg
