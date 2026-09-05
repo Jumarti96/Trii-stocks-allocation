@@ -13,13 +13,25 @@ download_workers: 3             # parallel batch workers
 download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
 
 # Transformer model (Step 3)
-periods_to_forecast: 4        # How many periods ahead to predict. Suggested default: 4.
+periods_to_forecast: 24       # How many periods ahead to predict, and the horizon the
+                              # allocation is built for. Must equal transformer_forecast_window
+                              # when transformer_loss is rank_ic (see the advanced block below).
 
 # Portfolio optimisation (Step 4)
 allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)
 allocation_ranking: sharpe   # "sharpe" (mu/sigma) | "return" (mu only)
-allocation_method: parametric_michaud   # "parametric_michaud" | "msr"
-michaud_spread: 4.0                      # s; draw scale on Sigma/T (4.0 = "s4", deployed: most consistent across regimes, lower vol/turnover)
+allocation_method: parametric_michaud   # "parametric_michaud" | "msr" | "equal_weight_topn"
+                                        # equal_weight_topn drops the optimiser and equal-weights the
+                                        # top equal_weight_n candidates. It matched parametric_michaud in
+                                        # the backtest (net Sharpe 1.132 vs 1.131, head-to-head p=0.949),
+                                        # so it is available for comparison; michaud remains the default.
+# equal_weight_n: 12                    # names held by equal_weight_topn; default = 1/min_weight
+michaud_spread: 2.0                      # s; draw scale on Sigma/T. Lowered from 4.0: s in {0,1,2} ranked
+                                         # above {4,6,8} identically across three independent backtest runs
+                                         # (different seeds, two cadences). s=1 topped every run but is
+                                         # statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break —
+                                         # it holds more names and degrades more gracefully if forecasts
+                                         # deteriorate. Re-run: experiments/backtest.py --cadence 12,24.
 michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
 michaud_seed: 0                          # int = reproducible; null = fresh draws
 rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
@@ -39,6 +51,9 @@ transformer_loss: rank_ic           # 'rank_ic' (cross-sectional ranking objecti
                                     # scale-free, so watch the scale ratio printed per training run.
 transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
 n_transformer_runs: 150             # Independent training runs; predictions are averaged.
+                                    # 150 from a convergence study: top-N selection stopped changing
+                                    # past ~150 runs (commit 3096393). Backtests use 50, where mu
+                                    # dispersion is within ~1% of the 150-run value.
 time_window: null                   # Input sequence length; null -> periods_per_year.
 liquidity_window_fraction: 0.10       # lookback = last 10% of the time-series (proportional to download horizon)
 liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of the lookback window

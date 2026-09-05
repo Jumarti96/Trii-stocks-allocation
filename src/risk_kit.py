@@ -459,6 +459,26 @@ def msr(riskfree_rate, **kwargs):
     return results.x
 
 # Define a function to find the combination with the highest Sharpe-Ratio, with a few adjustments
+def _neg_sharpe_gradient(weights, riskfree_rate, returns, covmat):
+    """Analytical gradient of the negative Sharpe ratio w.r.t. weights.
+
+    Quotient rule on -(w'R - rf) / sqrt(w'Cw):
+        d(ret)/dw = R
+        d(vol)/dw = Cw / vol
+        grad      = -(R*vol - (ret - rf) * Cw/vol) / vol^2
+
+    Supplying this to SLSQP replaces the finite-difference gradient, which costs
+    n+1 objective evaluations per iteration. Verified against approx_fprime in
+    tests/test_risk_kit_gradient.py.
+    """
+    ret = portfolio_return(weights, returns)
+    vol = portfolio_vol(weights, covmat)
+    R = returns.values if hasattr(returns, 'values') else np.array(returns)
+    C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
+    dv = (C @ weights) / vol
+    return -(R * vol - (ret - riskfree_rate) * dv) / (vol ** 2)
+
+
 def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
     """
     Returns the Sharpe-ratio maximizing portfolio, with a parameter to set a minimum acceptable weight:\n
@@ -471,6 +491,7 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
     debug: if True, prints optimizer progress and convergence info (default: False)\n
     """
     debug = kwargs.pop('debug', False)
+    use_gradient = kwargs.pop('use_gradient', False)
     returns, covmat = returns_covmat_validation(**kwargs)
     n = returns.shape[0]
     init_guess = np.repeat(1/n, n)
@@ -487,22 +508,6 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
         vol = portfolio_vol(weights, covmat)
         return -(ret - riskfree_rate)/vol
 
-    #TODO: Pendiente a revisar 
-    def neg_sharpe_gradient(weights, riskfree_rate, returns, covmat):
-        """
-        Calculates the analytical gradient explicitly to massively speed up SciPy's SLSQP.
-        """
-        ret = portfolio_return(weights, returns)
-        vol = portfolio_vol(weights, covmat)
-        
-        R = returns.values if hasattr(returns, 'values') else np.array(returns)
-        C = covmat.values if hasattr(covmat, 'values') else np.array(covmat)
-        
-        # Quotient Rule derivative w.r.t weights (w):
-        dv = (C @ weights) / vol
-        grad = -(R * vol - (ret - riskfree_rate) * dv) / (vol**2)
-        return grad
-
     # [3] Callback: called after every iteration when debug=True
     iteration_counter = [0]
     def optimizer_callback(weights):
@@ -515,7 +520,9 @@ def msr_tuned(riskfree_rate, max_weight=1.0, **kwargs):
     results = minimize(neg_sharpe_ratio, init_guess,
                        args = (riskfree_rate, returns, covmat),
                        method = 'SLSQP',
-                       # jac = neg_sharpe_gradient,  # DISABLED
+                       # Opt-in: default False keeps the historical finite-difference
+                       # path byte-identical for production callers.
+                       jac = _neg_sharpe_gradient if use_gradient else None,
                        # [1] disp: print summary on completion   [2] iprint: print each iteration
                        options = {'disp': debug, 'iprint': 2 if debug else -1},
                        callback = optimizer_callback if debug else None,

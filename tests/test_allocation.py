@@ -77,6 +77,67 @@ class TestApplyConsensusFloor:
         assert abs(out.sum() - 1.0) < 1e-9
 
 
+class TestConsensusFloorRespectsMaxWeight:
+    """msr_tuned bounds every MC draw to max_weight, but the floor then drops
+    names and renormalises the survivors to sum to 1, which can push a weight
+    back over the cap with nothing re-checking it.
+
+    Measured on the calibration sweep: 72 of 208 allocations exceeded a 0.15
+    cap, median 21% over, worst 0.285 (+90%).
+    """
+
+    def test_renormalisation_after_drop_breaches_the_cap(self):
+        # The regression case: a heavy name plus a tail that the floor removes.
+        # Renormalising 0.14 over a 0.72 surviving base gives 0.194 > 0.15.
+        w = pd.Series({"A": 0.14, "B": 0.13, "C": 0.13, "D": 0.13, "E": 0.13,
+                       "F": 0.12, "G": 0.11, "H": 0.06, "I": 0.03, "J": 0.02})
+        out = apply_consensus_floor(w, min_weight=0.05, max_weight=0.15)
+        assert out.max() <= 0.15 + 1e-9
+        assert abs(out.sum() - 1.0) < 1e-9
+
+    def test_capping_cascades_to_second_name(self):
+        # Capping A pushes its excess onto B, which must then also be capped.
+        w = pd.Series({"A": 0.50, "B": 0.28, "C": 0.12, "D": 0.10})
+        out = apply_consensus_floor(w, min_weight=0.0, max_weight=0.30)
+        assert out.max() <= 0.30 + 1e-9
+        assert abs(out.sum() - 1.0) < 1e-9
+        assert (out > 0).sum() == 4
+
+    def test_floor_leaves_enough_names_for_the_cap_to_be_satisfiable(self):
+        # A 0.15 cap needs ceil(1/0.15) = 7 names; 6 x 0.15 = 0.90 < 1. The old
+        # guard stopped at 2 survivors, which could strip the book past
+        # feasibility. Observed once in the sweep: a 6-name book at 0.183.
+        w = pd.Series({c: v for c, v in zip("ABCDEFGHIJ",
+                                            [0.40, 0.30, 0.20, 0.04, 0.02, 0.01,
+                                             0.01, 0.01, 0.005, 0.005])})
+        out = apply_consensus_floor(w, min_weight=0.30, max_weight=0.15)
+        held = (out > 0).sum()
+        assert held >= 7, f"only {held} names survive; a 0.15 cap needs 7"
+        assert out.max() <= 0.15 + 1e-9
+
+    def test_raises_when_cap_is_unsatisfiable_for_the_universe(self):
+        # 5 names cannot sum to 1 under a 0.15 cap. Silently shipping a book
+        # that breaks a stated limit is the failure this fix exists to prevent.
+        w = pd.Series({"A": 0.3, "B": 0.2, "C": 0.2, "D": 0.2, "E": 0.1})
+        with pytest.raises(ValueError, match="max_weight"):
+            apply_consensus_floor(w, min_weight=0.0, max_weight=0.15)
+
+    def test_default_max_weight_preserves_old_behaviour(self):
+        # Existing callers pass no cap and must be unaffected.
+        w = pd.Series({"A": 0.60, "B": 0.38, "C": 0.02})
+        legacy = apply_consensus_floor(w, min_weight=0.05)
+        assert abs(legacy["A"] - 0.60 / 0.98) < 1e-9
+
+    def test_capping_does_not_reintroduce_a_sub_floor_tail(self):
+        # Water-filling only raises the uncapped names, so the tail it feeds can
+        # never fall back below the floor -- there is no floor/cap cycle.
+        w = pd.Series({"A": 0.40, "B": 0.25, "C": 0.20, "D": 0.09, "E": 0.06})
+        out = apply_consensus_floor(w, min_weight=0.05, max_weight=0.25)
+        held = out[out > 0].sort_values()
+        assert held.cumsum().iloc[0] >= 0.05 - 1e-9
+        assert out.max() <= 0.25 + 1e-9
+
+
 def _cov3():
     names = ["A", "B", "C"]
     return pd.DataFrame(
@@ -113,7 +174,7 @@ class TestSampleMuDraws:
         assert np.allclose(pd.DataFrame(a).values, pd.DataFrame(b).values)
 
 
-from allocation import resampled_michaud, allocate
+from allocation import resampled_michaud, allocate, equal_weight_topn_alloc
 
 
 @pytest.fixture
@@ -163,6 +224,81 @@ class TestAllocateDispatcher:
         cfg = dict(CFG); cfg["allocation_method"] = "bogus"
         with pytest.raises(ValueError):
             allocate(_mu5([0.1] * 5), cov5, cfg, n_periods=100)
+
+    def test_routes_to_equal_weight_topn(self, cov5):
+        cfg = dict(CFG)
+        cfg.update(allocation_method="equal_weight_topn", equal_weight_n=3,
+                   min_weight=0.05, max_weight=0.6)
+        mu = _mu5([0.20, 0.10, 0.05, 0.05, 0.05])
+        got = allocate(mu, cov5, cfg, n_periods=100)
+        want = equal_weight_topn_alloc(mu, cov5, cfg)
+        assert np.allclose(got.values, want.values)
+
+
+class TestEqualWeightTopN:
+    """Equal-weighting the model's picks matched the Michaud optimiser in the
+    backtest (net Sharpe 1.132 vs 1.131, head-to-head p=0.949), so it is worth
+    having as a switchable allocator rather than only as a benchmark.
+    """
+
+    def test_holds_exactly_n_names_at_equal_weight(self, cov5):
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=3, min_weight=0.05, max_weight=0.6)
+        w = equal_weight_topn_alloc(_mu5([0.20, 0.10, 0.05, 0.02, 0.01]), cov5, cfg)
+        held = w[w > 0]
+        assert len(held) == 3
+        assert np.allclose(held.values, 1 / 3)
+        assert abs(w.sum() - 1.0) < 1e-9
+
+    def test_selects_by_sharpe_when_ranking_is_sharpe(self, cov5):
+        # cov5 has unequal variances, so mu-ranking and sharpe-ranking differ.
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=2, allocation_ranking="sharpe",
+                   min_weight=0.05, max_weight=0.6)
+        mu = _mu5([0.20, 0.10, 0.05, 0.05, 0.05])
+        vol = np.sqrt(np.diag(cov5.values))
+        expected = set(pd.Series(mu.values / vol, index=mu.index).nlargest(2).index)
+        held = equal_weight_topn_alloc(mu, cov5, cfg)
+        assert set(held[held > 0].index) == expected
+
+    def test_selects_by_return_when_ranking_is_return(self, cov5):
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=2, allocation_ranking="return",
+                   min_weight=0.05, max_weight=0.6)
+        mu = _mu5([0.20, 0.10, 0.05, 0.05, 0.05])
+        held = equal_weight_topn_alloc(mu, cov5, cfg)
+        assert set(held[held > 0].index) == set(mu.nlargest(2).index)
+
+    def test_rejects_n_that_would_breach_max_weight(self, cov5):
+        # 1/2 = 0.50 per name against a 0.15 cap is infeasible.
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=2, min_weight=0.05, max_weight=0.15)
+        with pytest.raises(ValueError, match="max_weight"):
+            equal_weight_topn_alloc(_mu5([0.2] * 5), cov5, cfg)
+
+    def test_rejects_n_that_would_breach_min_weight(self, cov5):
+        # 5 names at 1/5 = 0.20 each is below a 0.30 floor. Checked against the
+        # EFFECTIVE n, after clamping to the universe -- asking for more names
+        # than exist is not itself an error (see the clamping test below).
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=5, min_weight=0.30, max_weight=0.6)
+        with pytest.raises(ValueError, match="min_weight"):
+            equal_weight_topn_alloc(_mu5([0.2] * 5), cov5, cfg)
+
+    def test_default_n_satisfies_both_weight_bounds(self, cov5):
+        cfg = dict(CFG)
+        cfg.update(min_weight=0.05, max_weight=0.6)
+        cfg.pop("equal_weight_n", None)
+        w = equal_weight_topn_alloc(_mu5([0.5, 0.4, 0.3, 0.2, 0.1]), cov5, cfg)
+        held = w[w > 0]
+        assert held.iloc[0] >= 0.05 - 1e-9
+        assert held.iloc[0] <= 0.6 + 1e-9
+
+    def test_caps_n_at_the_available_universe(self, cov5):
+        cfg = dict(CFG)
+        cfg.update(equal_weight_n=50, min_weight=0.0, max_weight=1.0)
+        w = equal_weight_topn_alloc(_mu5([0.2] * 5), cov5, cfg)
+        assert (w > 0).sum() == 5
 
 
 from allocation import select_top_n
