@@ -45,14 +45,11 @@ output_path: "results/allocation_output.csv"
 # Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
 
 # Transformer model internals — do not change without a deep understanding of the model.
-transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step).
-                                    # B chosen over current/A_surgical/B_4/C_crosssectional on a
-                                    # walk-forward rank-IC study (30 blocks x 3 seeds, commit e90abda).
+transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step). Default: B.
 transformer_loss: rank_ic           # 'rank_ic' (cross-sectional ranking objective) | 'auto' (legacy MSE/Huber).
                                     # rank_ic optimises the ordering the optimiser actually consumes; it is
                                     # scale-free, so watch the scale ratio printed per training run.
-transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year.
-                                    # 24 validated in the same arch study as transformer_arch.
+transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
 n_transformer_runs: 150             # Independent training runs; predictions are averaged.
                                     # 150 from a convergence study: top-N selection stopped changing
                                     # past ~150 runs (commit 3096393). Backtests use 50, where mu
