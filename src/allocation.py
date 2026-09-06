@@ -155,13 +155,14 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     Why s = 2.0. Lowered from 4.0: s in {0, 1, 2} ranked above {4, 6, 8} identically across three
     independent backtest runs (different seeds, two rebalancing cadences). s=1 topped every run but
     is statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break -- it holds more names and
-    degrades more gracefully if the forecasts deteriorate. Re-run with
-    experiments/backtest.py --cadence 12,24.
+    degrades more gracefully if the forecasts deteriorate. Re-calibrate with a walk-forward sweep
+    over s, scoring net-of-cost Sharpe paired against a fixed baseline; src/backtesting.py supplies
+    the schedule, the benchmark strategies and the paired statistics.
 
     s is calibrated against the SCALE of mu, since the draw covariance is s^2 * Sigma / T while mu
     carries its own dispersion. A forecast whose spread is several times wider than reality makes
     that perturbation negligible and collapses the consensus back onto the raw msr solution --
-    which is one reason experiments/capacity_study.py caps the universe at ~600 names.
+    which is one reason transformer_model.capacity_report caps the universe at ~600 names.
     """
     rf = cfg["rf_period"]
     max_w = cfg["max_weight"]
@@ -172,7 +173,7 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     seed = cfg.get("michaud_seed", 0)
     # Opt-in analytical gradient (~4.4x faster on an 80-stock problem). Absent
     # from params.yaml, so production keeps the historical finite-difference path;
-    # experiments/backtest.py sets it for its bulk optimisations.
+    # bulk sweeps running thousands of optimisations should set it.
     use_gradient = cfg.get("use_gradient", False)
 
     rng = np.random.default_rng(seed)
@@ -222,7 +223,7 @@ def equal_weight_topn_alloc(returns, covmat, cfg):
     Included because it matched the Michaud consensus in the walk-forward backtest
     (net Sharpe 1.132 vs 1.131 at 24-week cadence; head-to-head p=0.949), which
     suggests the edge lives in the forecast's stock selection rather than in how
-    the optimiser weights it. See docs/experiments/backtest.md.
+    the optimiser weights it.
 
     Reads cfg['equal_weight_n'] (defaults to the most diversified book the
     min_weight floor allows) and ranks by cfg['allocation_ranking'], reusing

@@ -28,4 +28,4 @@ data/*
 
 docs/superpowers/
 .worktrees/
-experiments/results/
+experiments/

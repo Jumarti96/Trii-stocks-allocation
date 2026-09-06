@@ -206,6 +206,25 @@ def capacity_report(n_stocks, n_periods, cfg, arch=None):
     Parameters are counted from the built model rather than a formula, so this cannot
     drift out of step with the architecture it is describing.
 
+    Where the thresholds come from. A study on a 3,033-stock global catalogue (4
+    train/test splits, 8 runs each, H=24) varied ONLY the training universe and scored
+    the forecast on a fixed 80-name evaluation set. Ratio of predicted to actual
+    cross-sectional dispersion, paired against n=80:
+
+        n=150   +0.13  p 0.14      n=1200  +1.66  p 0.005
+        n=300   +0.14  p 0.35      n=3033  +4.93  p 0.023
+        n=600   +0.20  p 0.13
+
+    Every n<=600 observation fell in [0.15, 0.79] and every n>=1200 one in
+    [1.63, 8.76] -- no overlap. Predicting a spread 2-5x wider than reality is an
+    overfitting signature, and it decalibrates michaud_spread, which is tuned against
+    mu's scale. CAPACITY_ERROR fires at n~1100, where that break actually occurs.
+
+    That study also measured rank IC and settled NOTHING there: the 95% CI at n=80 was
+    [-0.001, +0.293], not distinguishable from a momentum baseline (p=0.37), with a
+    minimum detectable difference of 0.289 against effects near 0.1. So these limits
+    rest on the dispersion result and on the parameter count, NOT on measured accuracy.
+
     Returns {'n_stocks', 'n_periods', 'n_samples', 'n_params', 'params_per_sample',
     'verdict', 'message'} with verdict in {'ok', 'warn', 'error'}.
     """

@@ -14,7 +14,7 @@ rf_rate: 0.11                 # risk-free rate IN report_currency (0.11 = 10Y Co
 universe_topn: 300            # how many stocks the model forecasts, picked by liquidity.
                               # No-op if your catalogue is smaller. Do not exceed ~600:
                               # past that the forecast over-disperses badly - see
-                              # experiments/capacity_study.py. null disables the screen.
+                              # transformer_model.capacity_report. null disables the screen.
 
 # --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly

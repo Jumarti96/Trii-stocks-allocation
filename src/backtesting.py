@@ -1,7 +1,7 @@
 """
 Backtesting engine: walk-forward evaluation of allocation strategies.
 
-Pure functions, no I/O -- experiments/backtest.py does the file reading, training
+Pure functions, no I/O -- the calling harness does the file reading, training
 and reporting, the same way pipeline/03_allocate.py sits in front of allocation.py.
 
 Two things here are deliberately separated that the pipeline conflates:
