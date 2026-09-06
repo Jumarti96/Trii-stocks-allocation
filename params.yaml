@@ -34,20 +34,29 @@ universe_topn: null           # null = no screen (current behaviour, 80-stock un
                               # 3,518, 1000 -> 8,601, 3000 -> 23,124. VRAM at 3000 is only
                               # ~288MB of tensors; the limit is statistical, not hardware.
                               #
-                              # Measured out-of-sample rank IC on a FIXED 80-stock evaluation
-                              # set, varying only the training universe (4 splits, 8 runs,
-                              # 3,033-stock global catalogue). Momentum baseline IC +0.050:
-                              #     n=80   IC +0.146   dispersion 0.42
-                              #     n=150  IC +0.182   dispersion 0.54
-                              #     n=300  IC +0.114   dispersion 0.55
-                              #     n=600  IC +0.133   dispersion 0.61
-                              #     n=1200 IC -0.008   dispersion 2.08   <-- breaks here
-                              #     n=3033 IC +0.042   dispersion 5.35
-                              # Past ~600 the forecast falls to the naive baseline and its
-                              # predicted spread runs 2-5x wider than reality -- overfitting.
-                              # That also decalibrates michaud_spread, which is tuned against
-                              # mu's scale. IC differences below n=600 are within noise
-                              # (se +-0.04..0.11); the dispersion trend is monotone and clean.
+                              # experiments/capacity_study.py, 4 splits x 8 runs on a
+                              # 3,033-stock global catalogue. Ratio of PREDICTED to actual
+                              # cross-sectional dispersion, paired against n=80:
+                              #     n=150   +0.13   p 0.14
+                              #     n=300   +0.14   p 0.35
+                              #     n=600   +0.20   p 0.13
+                              #     n=1200  +1.66   p 0.005   <-- breaks here
+                              #     n=3033  +4.93   p 0.023
+                              # Every n<=600 observation lies in [0.15, 0.79] and every
+                              # n>=1200 one in [1.63, 8.76] -- no overlap. Predicting a
+                              # spread 2-5x wider than reality is an overfitting signature,
+                              # and it decalibrates michaud_spread, which is tuned against
+                              # mu's scale.
+                              #
+                              # HONEST LIMIT: that study measured rank IC too, and it settled
+                              # NOTHING there -- not even whether the model beats a momentum
+                              # baseline (paired p=0.37). Its minimum detectable IC difference
+                              # is 0.289 against effects around 0.1, needing ~36 splits. So
+                              # the <=600 ceiling rests on the dispersion result and on the
+                              # parameter count (stocks are the feature axis: widening the
+                              # universe adds parameters and zero samples), NOT on any
+                              # measured accuracy. Evidence that the model has skill at all
+                              # comes from the separate 13-window backtest at n=80.
 universe_strata: null         # null = pure top-N by liquidity, which at a 3.9k catalogue
                               # returns mega-caps only. A list splits the ranking into equal
                               # bands and takes that many from each, e.g. [200, 60, 40] with

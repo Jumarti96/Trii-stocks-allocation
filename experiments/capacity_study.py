@@ -21,19 +21,30 @@ Also reports `disp`, the ratio of predicted to actual cross-sectional dispersion
 turned out to be the cleaner signal: it is monotone in n where IC is noisy, and it
 matters directly, because michaud_spread is calibrated against mu's scale.
 
-Findings on a 3,033-stock global catalogue (4 splits, 8 runs, H=24, momentum IC +0.050):
+Findings on a 3,033-stock global catalogue (4 splits, 8 runs, H=24), paired against
+n=80 because every arm shares a test window:
 
-    n=80    IC_top80 +0.146   disp 0.42
-    n=150   IC_top80 +0.182   disp 0.54
-    n=300   IC_top80 +0.114   disp 0.55
-    n=600   IC_top80 +0.133   disp 0.61
-    n=1200  IC_top80 -0.008   disp 2.08   <-- degrades here
-    n=3033  IC_top80 +0.042   disp 5.35
+    n         mean IC_top80   p        mean disp   p
+    80        +0.146          -        0.42        -
+    150       +0.182          0.40     0.54        0.14
+    300       +0.114          0.38     0.55        0.35
+    600       +0.133          0.81     0.61        0.13
+    1200      -0.008          0.27     2.08        0.005
+    3033      +0.042          0.10     5.35        0.023
+    momentum  +0.050          -        -           -
 
-Up to ~600 the forecast is indistinguishable from the 80-stock configuration and well
-above the naive baseline. Past that it falls TO the baseline while predicting a spread
-2-5x wider than reality -- overfitting. IC differences below n=600 are inside noise
-(se +-0.04..0.11); the dispersion trend is not.
+ONLY THE DISPERSION RESULT IS SUPPORTED. Past ~600 the model predicts a
+cross-sectional spread 2-5x wider than reality -- an overfitting signature -- and every
+n<=600 observation lies in [0.15, 0.79] against [1.63, 8.76] for n>=1200, with no
+overlap. It also decalibrates michaud_spread, which is tuned against mu's scale.
+
+The IC column settles nothing, in either direction. It does not establish that accuracy
+survives to 600, and it does not even establish that the model beats the momentum
+baseline (paired p=0.37, 3/4 splits; in split 3 momentum beat every arm). With 4 splits
+the minimum detectable IC difference is 0.289 against effects near 0.1 -- roughly 36
+splits would be needed. Do not read a flat IC curve here as evidence of no degradation;
+this design cannot see one. Raise CAPACITY_SPLITS and CAPACITY_RUNS before drawing any
+conclusion from IC.
 
 Env: CAPACITY_DATA (default data/), CAPACITY_SIZES, CAPACITY_RUNS, CAPACITY_SPLITS.
 Run: .venv/Scripts/python.exe -u experiments/capacity_study.py
