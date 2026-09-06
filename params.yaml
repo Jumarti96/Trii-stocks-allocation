@@ -23,16 +23,31 @@ periods_to_forecast: 24       # How many periods ahead to predict, and the horiz
 # returns here would hand the model a universe of pre-selected winners and destroy
 # any read on whether it has skill - that job belongs to the forecast.
 universe_topn: null           # null = no screen (current behaviour, 80-stock universe).
-                              # Set when pointing at a large catalogue. Sizing is bounded by
-                              # parameters-per-training-sample, NOT by VRAM: stocks are the
-                              # feature axis, so widening the universe adds parameters and
-                              # zero samples (a sample is a time window; all stocks share one
-                              # time axis). Measured at 521 weekly periods = 444 samples:
-                              #   80 stocks ->  1,921/sample  (the validated configuration)
-                              #  300 stocks ->  3,518/sample  (under 2x validated)
-                              # 1000 stocks ->  8,601/sample  (transformer_model warns >4,000)
-                              # 3000 stocks -> 23,124/sample  (errors >10,000)
-                              # VRAM at 3000 is only ~288MB of tensors; the limit is statistical.
+                              # Set when pointing at a large catalogue; 300 is the
+                              # recommended starting point, and do not exceed ~600.
+                              #
+                              # Sizing is bounded by parameters-per-training-sample, NOT by
+                              # VRAM: stocks are the feature axis, so widening the universe
+                              # adds parameters and zero samples (a sample is a time window;
+                              # all stocks share one time axis). At 521 weekly periods = 444
+                              # samples: 80 -> 1,921/sample (the validated config), 300 ->
+                              # 3,518, 1000 -> 8,601, 3000 -> 23,124. VRAM at 3000 is only
+                              # ~288MB of tensors; the limit is statistical, not hardware.
+                              #
+                              # Measured out-of-sample rank IC on a FIXED 80-stock evaluation
+                              # set, varying only the training universe (4 splits, 8 runs,
+                              # 3,033-stock global catalogue). Momentum baseline IC +0.050:
+                              #     n=80   IC +0.146   dispersion 0.42
+                              #     n=150  IC +0.182   dispersion 0.54
+                              #     n=300  IC +0.114   dispersion 0.55
+                              #     n=600  IC +0.133   dispersion 0.61
+                              #     n=1200 IC -0.008   dispersion 2.08   <-- breaks here
+                              #     n=3033 IC +0.042   dispersion 5.35
+                              # Past ~600 the forecast falls to the naive baseline and its
+                              # predicted spread runs 2-5x wider than reality -- overfitting.
+                              # That also decalibrates michaud_spread, which is tuned against
+                              # mu's scale. IC differences below n=600 are within noise
+                              # (se +-0.04..0.11); the dispersion trend is monotone and clean.
 universe_strata: null         # null = pure top-N by liquidity, which at a 3.9k catalogue
                               # returns mega-caps only. A list splits the ranking into equal
                               # bands and takes that many from each, e.g. [200, 60, 40] with
