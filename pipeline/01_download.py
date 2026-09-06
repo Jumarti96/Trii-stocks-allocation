@@ -75,9 +75,10 @@ def main():
     # (CSPX.L is USD despite .L), KY/CN issuers listed in Hong Kong, and cents-quoted
     # Johannesburg lines. Errors run from 1.35x to 100x on exactly the magnitude the
     # universe screen ranks by.
-    print(f"Resolving listings for {len(kept)} stocks "
-          f"(~{len(kept) * 0.9 / 60:.0f} min, cached to 01_currency.csv)...")
-    cur_df = resolve_listings(list(close_kept.columns), verbose=True)
+    workers = cfg["download_workers"]
+    print(f"Resolving listings for {len(kept)} stocks across {workers} workers "
+          f"(~{len(kept) * 0.9 / 60 / workers:.0f} min, cached to 01_currency.csv)...")
+    cur_df = resolve_listings(list(close_kept.columns), verbose=True, workers=workers)
     cur_df.to_csv(PATHS["01_currency"])
 
     unknown = sorted(cur_df.index[cur_df["currency"].isna()])

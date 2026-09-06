@@ -251,6 +251,37 @@ def test_resolve_listings_records_the_minor_unit_factor():
     assert got.loc["VOD.L", "unit_factor"] == 0.01
 
 
+def test_resolve_listings_parallel_preserves_input_order():
+    # One HTTP round-trip per stock, so a 3k catalogue is ~46 min sequentially. Threads
+    # complete out of order, and the row order must still match the input -- callers
+    # zip this against price columns.
+    ids = [f"T{i:03d}" for i in range(40)]
+    got = di.resolve_listings(ids, fetch_fn=lambda s: {"currency": "USD", "symbol": s},
+                              workers=8)
+    assert list(got.index) == ids
+
+
+def test_resolve_listings_parallel_matches_sequential():
+    ids = ["A.L", "B", "C.SN"]
+    fetch = lambda s: {"A.L": {"currency": "GBp"}, "B": {"currency": "USD"}}.get(s)
+    seq = di.resolve_listings(ids, fetch_fn=fetch, workers=1)
+    par = di.resolve_listings(ids, fetch_fn=fetch, workers=4)
+    pd.testing.assert_frame_equal(seq, par)
+    assert par.loc["A.L", "unit_factor"] == 0.01        # pence survives threading
+    assert par.loc["C.SN", "source"] == "inferred"      # fallback survives threading
+
+
+def test_resolve_listings_survives_a_failing_lookup():
+    # One bad identifier must not abort a 3k-stock run.
+    def flaky(s):
+        if s == "BAD":
+            raise RuntimeError("boom")
+        return {"currency": "USD"}
+    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2)
+    assert got.loc["GOOD", "currency"] == "USD"
+    assert got.loc["BAD", "source"] == "inferred"       # fell back, did not crash
+
+
 def test_resolve_listings_captures_symbol_and_name():
     # The catalogue is ISINs, and yfinance labels its output columns with the input
     # identifier -- so without this the final allocation report would name

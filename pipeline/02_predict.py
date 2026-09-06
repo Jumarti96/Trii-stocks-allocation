@@ -62,6 +62,14 @@ def main():
     # Universe screen. A null universe_topn is a complete no-op, so the default
     # path is byte-identical to the pre-screen pipeline.
     if cfg.get('universe_topn'):
+        missing = [k for k in ('01_volume', '01_fx', '01_currency')
+                   if not os.path.exists(PATHS[k])]
+        if missing:
+            raise FileNotFoundError(
+                f"universe_topn={cfg['universe_topn']} needs {missing}, which step 1 "
+                f"writes. This data/ directory predates the universe screen -- re-run "
+                f"pipeline/01_download.py (or orchestrator.py, which already treats "
+                f"these as step-1 outputs). Set universe_topn: null to skip the screen.")
         volume = pd.read_csv(PATHS['01_volume'], index_col=0)
         fx     = pd.read_csv(PATHS['01_fx'], index_col=0)
         cur_df = pd.read_csv(PATHS['01_currency'], index_col=0)

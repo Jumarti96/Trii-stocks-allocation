@@ -242,7 +242,7 @@ def _yf_listing(identifier):
         return None
 
 
-def resolve_listings(identifiers, fetch_fn=None, verbose=False):
+def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
     """Authoritative listing metadata per identifier, falling back to inference.
 
     Returns a DataFrame indexed by the input identifier, with columns
@@ -263,29 +263,48 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False):
     'US67066G1040' rather than 'NVDA', which cannot be traded against. The symbol
     arrives in the same call as the currency, so capturing it is free.
 
-    Costs one network call per identifier (~0.6-1.6s; 46 min for 3,033 names), so
-    callers must cache: step 1 writes 01_currency.csv and step 2 only reads it.
+    Costs one network round-trip per identifier (~0.6-1.6s), so it is issued across
+    `workers` threads and cached: step 1 writes 01_currency.csv and step 2 only reads
+    it. A single failed lookup falls back to inference rather than aborting the run --
+    at 3,000 names, something will always fail.
     """
     if fetch_fn is None:
         fetch_fn = _yf_listing
 
-    rows = {}
-    for i, ident in enumerate(identifiers):
-        info = fetch_fn(ident) or {}
+    def one(ident):
+        try:
+            info = fetch_fn(ident) or {}
+        except Exception:  # noqa: BLE001 - a bad identifier must not sink the batch
+            info = {}
         cur, factor = normalise_currency_code(info.get("currency"))
         source = "lookup"
         if cur is None:
             cur, factor, source = infer_currency(ident), 1.0, "inferred"
-        rows[ident] = {
+        return {
             "currency": cur,
             "unit_factor": factor,
             "symbol": info.get("symbol") or ident,
             "name": info.get("shortName") or info.get("longName") or "",
             "source": source,
         }
-        if verbose and (i + 1) % 250 == 0:
-            print(f"  listing {i + 1}/{len(identifiers)}", flush=True)
-    return pd.DataFrame.from_dict(rows, orient="index")
+
+    ids = list(identifiers)
+    rows = {}
+    if workers <= 1:
+        for i, ident in enumerate(ids):
+            rows[ident] = one(ident)
+            if verbose and (i + 1) % 250 == 0:
+                print(f"  listing {i + 1}/{len(ids)}", flush=True)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(one, ident): ident for ident in ids}
+            for i, fut in enumerate(as_completed(futures)):
+                rows[futures[fut]] = fut.result()
+                if verbose and (i + 1) % 250 == 0:
+                    print(f"  listing {i + 1}/{len(ids)}", flush=True)
+
+    # Threads finish out of order; callers zip this against price columns.
+    return pd.DataFrame.from_dict(rows, orient="index").reindex(ids)
 
 
 def _default_fx_fetch(pair, index):

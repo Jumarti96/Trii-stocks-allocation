@@ -37,6 +37,7 @@ def test_step2_passes_arch_and_slices_to_periods_to_forecast(tmp_path, monkeypat
     cfg['transformer_arch'] = 'B'
     cfg['transformer_forecast_window'] = 24
     cfg['periods_to_forecast'] = 4
+    cfg['universe_topn'] = None      # this test is about arch forwarding, not the screen
 
     paths = {
         '01_prices': str(tmp_path / "01_prices.csv"),

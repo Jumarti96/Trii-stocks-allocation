@@ -151,6 +151,17 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     Reads cfg['michaud_spread'] (s), cfg['michaud_mc_draws'] (K), cfg['michaud_seed'] (int for a
     reproducible draw set, or None for fresh draws). max_weight is enforced per draw by msr_tuned.
     Returns a Series over returns.index (dropped names = 0.0).
+
+    Why s = 2.0. Lowered from 4.0: s in {0, 1, 2} ranked above {4, 6, 8} identically across three
+    independent backtest runs (different seeds, two rebalancing cadences). s=1 topped every run but
+    is statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break -- it holds more names and
+    degrades more gracefully if the forecasts deteriorate. Re-run with
+    experiments/backtest.py --cadence 12,24.
+
+    s is calibrated against the SCALE of mu, since the draw covariance is s^2 * Sigma / T while mu
+    carries its own dispersion. A forecast whose spread is several times wider than reality makes
+    that perturbation negligible and collapses the consensus back onto the raw msr solution --
+    which is one reason experiments/capacity_study.py caps the universe at ~600 names.
     """
     rf = cfg["rf_period"]
     max_w = cfg["max_weight"]
