@@ -17,6 +17,60 @@ from transformer_model import (
 )
 
 
+from transformer_model import capacity_report, CAPACITY_WARN, CAPACITY_ERROR
+
+
+def _cap_cfg(**over):
+    cfg = {'time_window': 54, 'transformer_forecast_window': 24,
+           'transformer_arch': 'B', 'periods_to_forecast': 24}
+    cfg.update(over)
+    return cfg
+
+
+def test_capacity_report_reproduces_measured_anchors():
+    # Anchors measured on this architecture at 521 weekly periods (444 samples):
+    # n=80 -> 852,864 params -> 1,921/sample;  n=3000 -> 10,266,944 -> 23,124.
+    # Counting the built model rather than a formula keeps this honest if the
+    # architecture changes.
+    r80 = capacity_report(80, 521, _cap_cfg())
+    assert r80['n_samples'] == 444
+    assert r80['n_params'] == 852_864
+    assert round(r80['params_per_sample']) == 1921
+
+    r3000 = capacity_report(3000, 521, _cap_cfg())
+    assert r3000['n_params'] == 10_266_944
+    assert round(r3000['params_per_sample']) == 23124
+
+
+def test_capacity_report_verdicts_track_thresholds():
+    assert capacity_report(80, 521, _cap_cfg())['verdict'] == 'ok'        # 1,921
+    assert capacity_report(300, 521, _cap_cfg())['verdict'] == 'ok'       # 3,518
+    assert capacity_report(1000, 521, _cap_cfg())['verdict'] == 'warn'    # 8,601
+    assert capacity_report(3000, 521, _cap_cfg())['verdict'] == 'error'   # 23,124
+    assert CAPACITY_WARN < CAPACITY_ERROR
+
+
+def test_capacity_report_samples_never_grow_with_universe_size():
+    # The core finding: adding stocks adds parameters and zero samples, because a
+    # sample is a time window and every stock shares one time axis.
+    a = capacity_report(80, 521, _cap_cfg())
+    b = capacity_report(3000, 521, _cap_cfg())
+    assert a['n_samples'] == b['n_samples']
+    assert b['n_params'] > a['n_params']
+
+
+def test_capacity_report_more_history_improves_the_ratio():
+    short = capacity_report(300, 521, _cap_cfg())
+    long_ = capacity_report(300, 1041, _cap_cfg())      # ~20y weekly
+    assert long_['n_samples'] > short['n_samples']
+    assert long_['params_per_sample'] < short['params_per_sample']
+
+
+def test_capacity_report_raises_when_history_too_short_for_a_single_window():
+    with pytest.raises(ValueError, match="no training samples"):
+        capacity_report(80, 60, _cap_cfg())
+
+
 def test_annualize_scalar():
     assert abs(annualize_period_return(0.01, 12) - ((1.01 ** 12) - 1)) < 1e-12
 
@@ -578,3 +632,36 @@ def test_train_runs_rank_ic_shape_and_original_scale():
     assert runs.shape == (1, 4, 5)
     assert np.isfinite(runs).all()
     assert runs.std() < 0.5          # denormalised to return scale, not ~1.0
+
+
+def test_train_and_predict_reports_the_averaged_scale_ratio(capsys):
+    # The per-run ratio printed during training is ~1.7x the averaged one, and the
+    # averaged mu is what reaches the optimiser -- so that is the figure to watch for
+    # drift when the arch, loss or universe size changes.
+    import numpy as np
+    import pandas as pd
+    from transformer_model import train_and_predict
+    rng = np.random.default_rng(0)
+    rets = pd.DataFrame(rng.normal(0, 0.02, (90, 5)),
+                        columns=[f"S{i}" for i in range(5)])
+    cfg = {'time_window': 20, 'periods_to_forecast': 8, 'transformer_forecast_window': 8,
+           'transformer_epochs': 1, 'transformer_warmup_epochs': 0,
+           'transformer_batch_size': 16, 'n_transformer_runs': 2}
+    train_and_predict(rets, cfg, n_runs=2, verbose=True, arch='B')
+    out = capsys.readouterr().out
+    assert "scale ratio of the averaged mu" in out
+    assert "this run alone" in out          # per-run label disambiguated
+
+
+def test_train_and_predict_stays_quiet_when_not_verbose(capsys):
+    import numpy as np
+    import pandas as pd
+    from transformer_model import train_and_predict
+    rng = np.random.default_rng(0)
+    rets = pd.DataFrame(rng.normal(0, 0.02, (90, 5)),
+                        columns=[f"S{i}" for i in range(5)])
+    cfg = {'time_window': 20, 'periods_to_forecast': 8, 'transformer_forecast_window': 8,
+           'transformer_epochs': 1, 'transformer_warmup_epochs': 0,
+           'transformer_batch_size': 16, 'n_transformer_runs': 2}
+    train_and_predict(rets, cfg, n_runs=2, verbose=False, arch='B')
+    assert capsys.readouterr().out == ""

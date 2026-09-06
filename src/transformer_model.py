@@ -175,6 +175,93 @@ def build_arch(arch_name, input_shape, decode_steps=None, n_outputs=None):
     return TransformerModelSurgical(input_shape, decode_steps=steps, n_outputs=n_outputs)
 
 
+# Parameters-per-training-sample thresholds. Anchors measured on this architecture
+# at 521 weekly periods (444 samples): n=80 -> 1,921 (the validated configuration),
+# n=300 -> 3,518, n=1000 -> 8,601, n=3000 -> 23,124.
+CAPACITY_WARN  = 4_000
+CAPACITY_ERROR = 10_000
+
+
+def resolve_decode_steps(cfg, arch):
+    """Decode-window length for `arch`, mirroring the resolution inside train_runs.
+
+    Autoregressive archs emit one step per forward pass, so they report 1.
+    """
+    if arch not in _MULTISTEP_ARCHS:
+        return 1
+    steps = ARCH_DECODE_STEPS[arch]
+    return cfg['transformer_forecast_window'] if steps is None else steps
+
+
+def capacity_report(n_stocks, n_periods, cfg, arch=None):
+    """How overparameterised is this model for the data it will be trained on?
+
+    Stocks are the *feature* axis, so widening the universe adds parameters (a
+    private input_proj column and output_proj row per stock) and **zero samples** --
+    a sample is a time window and every stock shares one time axis. The parameters
+    grow linearly in n_stocks while n_samples stays fixed at
+    `n_periods - time_window - decode_steps + 1`, so the ratio is the quantity that
+    decides whether a universe size is trainable at all.
+
+    Parameters are counted from the built model rather than a formula, so this cannot
+    drift out of step with the architecture it is describing.
+
+    Where the thresholds come from. A study on a 3,033-stock global catalogue (4
+    train/test splits, 8 runs each, H=24) varied ONLY the training universe and scored
+    the forecast on a fixed 80-name evaluation set. Ratio of predicted to actual
+    cross-sectional dispersion, paired against n=80:
+
+        n=150   +0.13  p 0.14      n=1200  +1.66  p 0.005
+        n=300   +0.14  p 0.35      n=3033  +4.93  p 0.023
+        n=600   +0.20  p 0.13
+
+    Every n<=600 observation fell in [0.15, 0.79] and every n>=1200 one in
+    [1.63, 8.76] -- no overlap. Predicting a spread 2-5x wider than reality is an
+    overfitting signature, and it decalibrates michaud_spread, which is tuned against
+    mu's scale. CAPACITY_ERROR fires at n~1100, where that break actually occurs.
+
+    That study also measured rank IC and settled NOTHING there: the 95% CI at n=80 was
+    [-0.001, +0.293], not distinguishable from a momentum baseline (p=0.37), with a
+    minimum detectable difference of 0.289 against effects near 0.1. So these limits
+    rest on the dispersion result and on the parameter count, NOT on measured accuracy.
+
+    Returns {'n_stocks', 'n_periods', 'n_samples', 'n_params', 'params_per_sample',
+    'verdict', 'message'} with verdict in {'ok', 'warn', 'error'}.
+    """
+    arch = arch or cfg.get('transformer_arch', 'current')
+    time_window = cfg['time_window']
+    decode_steps = resolve_decode_steps(cfg, arch)
+
+    n_samples = n_periods - time_window - decode_steps + 1
+    if n_samples <= 0:
+        raise ValueError(
+            f"no training samples: {n_periods} periods cannot fill a "
+            f"{time_window}-period window plus {decode_steps} decode steps. "
+            f"Need at least {time_window + decode_steps} periods.")
+
+    steps_arg = decode_steps if arch in _MULTISTEP_ARCHS else None
+    n_params = sum(p.numel() for p in build_arch(
+        arch, input_shape=(time_window, n_stocks), decode_steps=steps_arg).parameters())
+    ratio = n_params / n_samples
+
+    verdict = ('error' if ratio > CAPACITY_ERROR
+               else 'warn' if ratio > CAPACITY_WARN else 'ok')
+    msg = (f"{n_stocks} stocks x {n_periods} periods -> {n_samples} training samples "
+           f"for {n_params:,} parameters ({ratio:,.0f} per sample)")
+    if verdict == 'warn':
+        msg += (f"\n      WARNING: above {CAPACITY_WARN:,}/sample. The validated "
+                f"configuration is 80 stocks at 1,921. Forecast quality past this "
+                f"point is untested.")
+    elif verdict == 'error':
+        msg += (f"\n      Above the {CAPACITY_ERROR:,}/sample limit. Reduce the "
+                f"universe (universe_topn), lengthen history (days_of_data), or "
+                f"shorten time_window/transformer_forecast_window.")
+
+    return {'n_stocks': n_stocks, 'n_periods': n_periods, 'n_samples': n_samples,
+            'n_params': n_params, 'params_per_sample': ratio,
+            'verdict': verdict, 'message': msg}
+
+
 def create_dataset(data, time_window):
     X, Y = [], []
     for i in range(len(data) - time_window):
@@ -530,7 +617,7 @@ def train_runs(returns_df, cfg, n_runs=None, verbose=True, arch='current'):
         if verbose:
             d = compute_scale_ratio(pd.DataFrame(run_preds, columns=returns_df.columns),
                                     returns_df)
-            print(f"    scale ratio: {d['ratio']:.3f}   "
+            print(f"    scale ratio (this run alone): {d['ratio']:.3f}   "
                   f"(pred mu std {d['pred_mu_std']:.6f} | "
                   f"hist mu std {d['hist_mu_std']:.6f})")
 
@@ -597,9 +684,21 @@ def train_and_predict(returns_df, cfg, n_runs=None, verbose=True, arch='current'
     supplies returns_df (rows = periods, columns = stocks) and assigns dates to the result.
     """
     runs = train_runs(returns_df, cfg, n_runs=n_runs, verbose=verbose, arch=arch)
-    if verbose:
-        print(f"Predictions averaged across {runs.shape[0]} runs.")
     preds_df = pd.DataFrame(runs.mean(axis=0), columns=returns_df.columns)
     lower_pct = cfg.get('winsorization_lower_pct', 1)
     upper_pct = cfg.get('winsorization_upper_pct', 99)
-    return winsorize_to_history(preds_df, returns_df, lower_pct, upper_pct)
+    out = winsorize_to_history(preds_df, returns_df, lower_pct, upper_pct)
+
+    if verbose:
+        # The per-run ratios printed above are NOT the number that matters: averaging
+        # independent runs shrinks cross-sectional spread (measured ~5.4 per run
+        # against ~3.2 once averaged, converging by roughly 10 runs). This is the
+        # ratio of the mu that actually reaches the optimiser, so it is the one to
+        # watch for drift when the architecture, loss or universe size changes.
+        d = compute_scale_ratio(out, returns_df)
+        print(f"Predictions averaged across {runs.shape[0]} runs.")
+        print(f"  scale ratio of the averaged mu (this is what the optimiser sees): "
+              f"{d['ratio']:.2f}")
+        print(f"    pred mu std {d['pred_mu_std']:.6f} | "
+              f"hist mu std {d['hist_mu_std']:.6f}")
+    return out

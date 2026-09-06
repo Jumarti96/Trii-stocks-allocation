@@ -31,7 +31,11 @@ STEPS = {
     1: {
         'script':  '01_download.py',
         'name':    'Download and Preprocess',
-        'outputs': [PATHS['01_prices'], PATHS['01_returns']],
+        # 01_volume/01_fx/01_currency feed the step-2 universe screen. Listing them
+        # here matters: without them a pre-screen data/ directory looks cached, step 1
+        # is skipped, and step 2 then fails on files that were never written.
+        'outputs': [PATHS['01_prices'], PATHS['01_returns'],
+                    PATHS['01_volume'], PATHS['01_fx'], PATHS['01_currency']],
     },
     2: {
         'script':  '02_predict.py',

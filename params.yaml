@@ -1,68 +1,71 @@
 # Stock Allocation Pipeline - Configuration
-# Edit values here. Derived values (period_freq, date_offset, future_freq,
-# time_window) are computed automatically by pipeline/config.py - do not add them.
+#
+# Put the tickers or ISINs you can actually buy in stock_tickers/*.csv (every .csv in
+# that folder is read), set the four values under "Your setup", and run orchestrator.py.
+# Rationale for the calibrated defaults lives next to the code that uses them, cited
+# per-parameter below. Derived values (period_freq, date_offset, future_freq,
+# time_window) are computed by pipeline/config.py - do not add them here.
 
-# Data and timing
+# --- Your setup --------------------------------------------------------------------
+investment: 120000000         # total capital, denominated in report_currency
+report_currency: COP          # ISO code for the report: prices, amounts, share counts
+rf_rate: 0.11                 # risk-free rate IN report_currency (0.11 = 10Y Colombian bond).
+                              # Change this whenever you change report_currency.
+universe_topn: 300            # how many stocks the model forecasts, picked by liquidity.
+                              # No-op if your catalogue is smaller. Do not exceed ~600:
+                              # past that the forecast over-disperses badly - see
+                              # transformer_model.capacity_report. null disables the screen.
+
+# --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
 interval: "1wk"               # "1wk" for weekly, "1mo" for monthly
-days_of_data: 3650            # Historical window to download (days)
+days_of_data: 3650            # historical window to download (days)
+periods_to_forecast: 24       # horizon to predict and allocate for; must equal
+                              # transformer_forecast_window when transformer_loss is rank_ic
 
-# Step 1 download + activity filter
-batch_size: 500                 # tickers per download batch
-download_workers: 3             # parallel batch workers
-download_timeout: 30            # per-batch yfinance timeout (s); generous for a 500-ticker batch
+# --- Universe screen (step 2) ------------------------------------------------------
+# Picks WHICH stocks to model, before forecasting, on return-neutral criteria only.
+# Never screen on past returns: see src/data_intake.select_universe for why.
+universe_strata: null         # null = pure top-N by liquidity (mega-caps only at scale).
+                              # A list spreads the budget over equal liquidity bands, e.g.
+                              # [200, 60, 40] with universe_topn 300. Must sum to topn.
+universe_price_floor: 0.0     # drop prices below this (penny stocks), in listing currency
+universe_min_market_cap: null # optional USD size floor; costs one yfinance call per stock
+unknown_currency: exclude     # stock whose quote currency will not resolve: "exclude" or
+                              # "assume_target" (see src/data_intake.convert_currency)
 
-# Transformer model (Step 3)
-periods_to_forecast: 24       # How many periods ahead to predict, and the horizon the
-                              # allocation is built for. Must equal transformer_forecast_window
-                              # when transformer_loss is rank_ic (see the advanced block below).
-
-# Portfolio optimisation (Step 4)
-allocation_top_n: 150        # candidates fed to optimizer; null = no cap (full universe)
-allocation_ranking: sharpe   # "sharpe" (mu/sigma) | "return" (mu only)
+# --- Portfolio optimisation (step 3) -----------------------------------------------
+allocation_top_n: 150         # candidates fed to the optimiser; null = no cap
+allocation_ranking: sharpe    # "sharpe" (mu/sigma) | "return" (mu only)
 allocation_method: parametric_michaud   # "parametric_michaud" | "msr" | "equal_weight_topn"
-                                        # equal_weight_topn drops the optimiser and equal-weights the
-                                        # top equal_weight_n candidates. It matched parametric_michaud in
-                                        # the backtest (net Sharpe 1.132 vs 1.131, head-to-head p=0.949),
-                                        # so it is available for comparison; michaud remains the default.
-# equal_weight_n: 12                    # names held by equal_weight_topn; default = 1/min_weight
-michaud_spread: 2.0                      # s; draw scale on Sigma/T. Lowered from 4.0: s in {0,1,2} ranked
-                                         # above {4,6,8} identically across three independent backtest runs
-                                         # (different seeds, two cadences). s=1 topped every run but is
-                                         # statistically tied with s=2 (p=0.88), so 2.0 takes the tie-break —
-                                         # it holds more names and degrades more gracefully if forecasts
-                                         # deteriorate. Re-run: experiments/backtest.py --cadence 12,24.
-michaud_mc_draws: 1000                   # K Monte-Carlo mu draws
-michaud_seed: 0                          # int = reproducible; null = fresh draws
-rf_rate: 0.11                 # Risk-free rate (10-Y Colombian bond yield ~11.2%)
-max_weight: 0.15              # Maximum portfolio weight per stock
-min_weight: 0.05              # Minimum portfolio weight per stock
+# equal_weight_n: 12          # names held by equal_weight_topn; default = 1/min_weight
+michaud_spread: 2.0           # s; draw scale on Sigma/T. See src/allocation.resampled_michaud
+michaud_mc_draws: 1000        # K Monte-Carlo mu draws
+michaud_seed: 0               # int = reproducible; null = fresh draws
+max_weight: 0.15              # maximum portfolio weight per stock
+min_weight: 0.05              # minimum portfolio weight per stock
 
-# Output (Step 5)
-investment_cop: 120000000     # Total capital available (COP)
+# --- Output (step 4) ---------------------------------------------------------------
 output_path: "results/allocation_output.csv"
 
-# Advanced — pipeline internals (calibrated defaults; regular users don't need to change these)
-
-# Transformer model internals — do not change without a deep understanding of the model.
-transformer_arch: B                 # 'current' (autoregressive) | 'B' (direct multi-step). Default: B.
-transformer_loss: rank_ic           # 'rank_ic' (cross-sectional ranking objective) | 'auto' (legacy MSE/Huber).
-                                    # rank_ic optimises the ordering the optimiser actually consumes; it is
-                                    # scale-free, so watch the scale ratio printed per training run.
-transformer_forecast_window: 24     # multi-step head output length; null -> periods_per_year. Default: 24 (validated).
-n_transformer_runs: 150             # Independent training runs; predictions are averaged.
-                                    # 150 from a convergence study: top-N selection stopped changing
-                                    # past ~150 runs (commit 3096393). Backtests use 50, where mu
-                                    # dispersion is within ~1% of the 150-run value.
-time_window: null                   # Input sequence length; null -> periods_per_year.
-liquidity_window_fraction: 0.10       # lookback = last 10% of the time-series (proportional to download horizon)
-liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of the lookback window
-liquidity_topn: null                  # optional compute cap before the transformer step (null = off)
-download_warn_fraction: 0.80          # warn if fewer than 80% of tickers downloaded successfully
-zero_volume_warn_threshold: 0.25      # warn if > 25% of stocks report zero volume (data-source alarm)
-winsorization_lower_pct: 1            # lower percentile bound for forecast winsorisation
-winsorization_upper_pct: 99           # upper percentile bound for forecast winsorisation
-transformer_epochs: 50                # training epochs per transformer run
-transformer_warmup_epochs: 5          # LR linear-warmup epochs (out of transformer_epochs)
+# --- Advanced: pipeline internals --------------------------------------------------
+# Calibrated defaults. Each is explained where it is consumed; do not change the
+# transformer block without reading src/transformer_model.py.
+transformer_arch: B                   # 'current' (autoregressive) | 'B' (direct multi-step)
+transformer_loss: rank_ic             # 'rank_ic' (ranking objective) | 'auto' (legacy MSE/Huber)
+transformer_forecast_window: 24       # multi-step head output length; null -> periods_per_year
+n_transformer_runs: 150               # independent runs, averaged (convergence study, 3096393)
+time_window: null                     # input sequence length; null -> periods_per_year
+transformer_epochs: 50                # training epochs per run
+transformer_warmup_epochs: 5          # LR linear-warmup epochs
 transformer_lr: 0.0001                # peak Adam learning rate
-transformer_batch_size: 32            # mini-batch size for transformer training
+transformer_batch_size: 32            # mini-batch size
+winsorization_lower_pct: 1            # forecast winsorisation, lower percentile
+winsorization_upper_pct: 99           # forecast winsorisation, upper percentile
+batch_size: 500                       # tickers per download batch
+download_workers: 3                   # parallel batch workers
+download_timeout: 30                  # per-batch yfinance timeout (s)
+download_warn_fraction: 0.80          # warn if fewer than 80% of tickers downloaded
+zero_volume_warn_threshold: 0.25      # warn if > 25% of stocks report zero volume
+liquidity_window_fraction: 0.10       # activity lookback = last 10% of the time-series
+liquidity_min_active_fraction: 0.85   # keep stocks trading in >= 85% of that window

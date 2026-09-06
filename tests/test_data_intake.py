@@ -138,6 +138,359 @@ def test_activity_filter_keeps_active_drops_inactive():
     assert list(detail.columns) == ["avg_dollar_volume", "active_fraction", "kept"]
 
 
+def test_avg_dollar_volume_as_of_uses_window_ending_at_that_date():
+    # p1..p4 with a volume spike at the end. Selecting "as of p2" must not see it --
+    # this is the look-ahead guard for backtests (2019 universe, 2026 liquidity).
+    close, volume = _frames({"A": ([10, 10, 10, 10], [1, 1, 100, 100])})
+    assert di.avg_dollar_volume(close, volume, window=2)["A"] == pytest.approx(1000.0)
+    assert di.avg_dollar_volume(close, volume, window=2, as_of="p2")["A"] == pytest.approx(10.0)
+
+
+def test_avg_dollar_volume_as_of_none_matches_tail_behaviour():
+    # Production path must be unchanged: as_of=None is the pre-existing semantics.
+    close, volume = _frames({"A": ([10, 10, 10, 10], [1, 2, 3, 4])})
+    assert (di.avg_dollar_volume(close, volume, window=3)["A"]
+            == pytest.approx(di.avg_dollar_volume(close, volume, window=3, as_of="p4")["A"]))
+
+
+def test_avg_dollar_volume_as_of_early_date_uses_available_rows():
+    # A newly listed name has fewer than `window` periods -- not an error.
+    close, volume = _frames({"A": ([10, 10, 10, 10], [5, 5, 5, 5])})
+    assert di.avg_dollar_volume(close, volume, window=10, as_of="p1")["A"] == pytest.approx(50.0)
+
+
+def test_avg_dollar_volume_converts_when_fx_supplied():
+    close, volume = _frames({
+        "NVDA":         ([10, 10, 10, 10], [1, 1, 1, 1]),      # 10 USD
+        "ECOPETROL.CL": ([10, 10, 10, 10], [1, 1, 1, 1]),      # 10 COP
+    })
+    fx = pd.DataFrame({"USD": [1.0] * 4, "COP": [0.00025] * 4}, index=close.index)
+    cur_map = {"NVDA": "USD", "ECOPETROL.CL": "COP"}
+    adv = di.avg_dollar_volume(close, volume, window=2, fx=fx, cur_map=cur_map)
+    assert adv["NVDA"] == pytest.approx(10.0)
+    assert adv["ECOPETROL.CL"] == pytest.approx(0.0025)
+    assert adv["NVDA"] > adv["ECOPETROL.CL"]      # equal raw ADV, correctly separated
+
+
+def test_avg_dollar_volume_drops_unknown_currency_rather_than_ranking_it():
+    close, volume = _frames({
+        "NVDA":    ([10, 10, 10, 10], [1, 1, 1, 1]),
+        "FOO.ZZZ": ([10, 10, 10, 10], [1, 1, 1, 1]),
+    })
+    fx = pd.DataFrame({"USD": [1.0] * 4}, index=close.index)
+    adv = di.avg_dollar_volume(close, volume, window=2, fx=fx,
+                               cur_map={"NVDA": "USD", "FOO.ZZZ": None})
+    assert "FOO.ZZZ" not in adv.index      # excluded, not silently ranked at face value
+    assert "NVDA" in adv.index
+
+
+def test_infer_currency_from_exchange_suffix():
+    assert di.infer_currency("NVDA") == "USD"          # bare ticker -> US listing
+    assert di.infer_currency("ECOPETROL.CL") == "COP"
+    assert di.infer_currency("SQMBCO.SN") == "CLP"
+    assert di.infer_currency("NESN.SW") == "CHF"
+    assert di.infer_currency("SAP.DE") == "EUR"
+    assert di.infer_currency("SHOP.TO") == "CAD"
+    assert di.infer_currency("7203.T") == "JPY"
+    assert di.infer_currency("BHP.AX") == "AUD"
+
+
+def test_infer_currency_from_isin_country_prefix():
+    # Used before download resolves ISINs to tickers.
+    assert di.infer_currency("US67066G1040") == "USD"   # NVDA
+    assert di.infer_currency("DE0007164600") == "EUR"   # SAP
+    assert di.infer_currency("GB0002374006") == "GBP"
+
+
+def test_infer_currency_returns_none_for_unknown_rather_than_defaulting():
+    # THE bug being fixed: silently defaulting an unknown suffix to USD would rank it
+    # by raw local-currency magnitude, which is how a Chilean mid-cap out-ranked a
+    # US mega-cap. Unknown must be reported, so the caller can exclude it.
+    assert di.infer_currency("FOO.ZZZ") is None
+    assert di.infer_currency("") is None
+
+
+def test_infer_currency_overrides_win():
+    # .L is genuinely ambiguous: LSE lists USD-denominated lines (CSPX.L is an ETF
+    # reporting currency USD), so the suffix table must be overridable.
+    assert di.infer_currency("CSPX.L") == "GBP"                             # table default
+    assert di.infer_currency("CSPX.L", overrides={"CSPX.L": "USD"}) == "USD"
+
+
+def test_normalise_currency_code_handles_minor_units():
+    # Yahoo quotes LSE stocks in pence ('GBp') and Johannesburg in cents ('ZAc').
+    # Treating those as GBP/ZAR overstates the amount 100x -- catastrophic for a
+    # ranking whose whole job is comparing magnitudes across markets.
+    assert di.normalise_currency_code("GBp") == ("GBP", 0.01)
+    assert di.normalise_currency_code("ZAc") == ("ZAR", 0.01)
+    assert di.normalise_currency_code("ILA") == ("ILS", 0.01)
+    assert di.normalise_currency_code("GBP") == ("GBP", 1.0)   # case is the discriminator
+    assert di.normalise_currency_code("usd") == ("USD", 1.0)
+    assert di.normalise_currency_code(None) == (None, 1.0)
+
+
+def test_resolve_listings_prefers_the_authoritative_lookup():
+    # Exchange suffix is only a heuristic, and it is wrong for cross-listed ETFs:
+    # CSPX.L is USD-denominated despite the .L suffix, and KY-domiciled ISINs are
+    # frequently HKD-listed. Measured 87.5% suffix/ISIN accuracy over 56 names.
+    got = di.resolve_listings(["CSPX.L", "NVDA"],
+                              fetch_fn=lambda s: {"CSPX.L": {"currency": "USD"}}.get(s))
+    assert got.loc["CSPX.L", "currency"] == "USD"       # lookup beat the .L -> GBP table
+    assert got.loc["NVDA", "currency"] == "USD"
+
+
+def test_resolve_listings_falls_back_to_inference_when_lookup_is_empty():
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    assert got.loc["ECOPETROL.CL", "currency"] == "COP"
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+
+
+def test_resolve_listings_records_the_minor_unit_factor():
+    got = di.resolve_listings(["VOD.L"], fetch_fn=lambda s: {"currency": "GBp"})
+    assert got.loc["VOD.L", "currency"] == "GBP"
+    assert got.loc["VOD.L", "unit_factor"] == 0.01
+
+
+def test_resolve_listings_parallel_preserves_input_order():
+    # One HTTP round-trip per stock, so a 3k catalogue is ~46 min sequentially. Threads
+    # complete out of order, and the row order must still match the input -- callers
+    # zip this against price columns.
+    ids = [f"T{i:03d}" for i in range(40)]
+    got = di.resolve_listings(ids, fetch_fn=lambda s: {"currency": "USD", "symbol": s},
+                              workers=8)
+    assert list(got.index) == ids
+
+
+def test_resolve_listings_parallel_matches_sequential():
+    ids = ["A.L", "B", "C.SN"]
+    fetch = lambda s: {"A.L": {"currency": "GBp"}, "B": {"currency": "USD"}}.get(s)
+    seq = di.resolve_listings(ids, fetch_fn=fetch, workers=1)
+    par = di.resolve_listings(ids, fetch_fn=fetch, workers=4)
+    pd.testing.assert_frame_equal(seq, par)
+    assert par.loc["A.L", "unit_factor"] == 0.01        # pence survives threading
+    assert par.loc["C.SN", "source"] == "inferred"      # fallback survives threading
+
+
+def test_resolve_listings_survives_a_failing_lookup():
+    # One bad identifier must not abort a 3k-stock run.
+    def flaky(s):
+        if s == "BAD":
+            raise RuntimeError("boom")
+        return {"currency": "USD"}
+    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2)
+    assert got.loc["GOOD", "currency"] == "USD"
+    assert got.loc["BAD", "source"] == "inferred"       # fell back, did not crash
+
+
+def test_resolve_listings_captures_symbol_and_name():
+    # The catalogue is ISINs, and yfinance labels its output columns with the input
+    # identifier -- so without this the final allocation report would name
+    # 'US67066G1040' rather than 'NVDA', which nobody can trade against. The symbol
+    # arrives in the same .info call as the currency, at no extra network cost.
+    got = di.resolve_listings(
+        ["US67066G1040"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "NVDA",
+                            "shortName": "NVIDIA Corporation"})
+    assert got.loc["US67066G1040", "symbol"] == "NVDA"
+    assert got.loc["US67066G1040", "name"] == "NVIDIA Corporation"
+
+
+def test_resolve_listings_falls_back_to_the_identifier_as_symbol():
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    assert got.loc["ECOPETROL.CL", "symbol"] == "ECOPETROL.CL"
+
+
+def test_convert_currency_applies_unit_factors():
+    idx = ["p1"]
+    fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
+    amounts = pd.Series({"VOD.L": 1e8, "NVDA": 1e8})
+    out = di.convert_currency(amounts, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
+                              unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
+    assert out["VOD.L"] == pytest.approx(1e8 * 0.01 * 1.35)   # pence, not pounds
+    assert out["NVDA"] == pytest.approx(1e8)
+
+
+def _fx_stub(pairs):
+    """DI seam mirroring download_all's download_fn: {pair: value} -> fetcher."""
+    def fetch(pair, index):
+        if pair not in pairs:
+            return None
+        return pd.Series(float(pairs[pair]), index=index)
+    return fetch
+
+
+def test_fetch_fx_rates_hub_is_unity_and_direct_pair_used():
+    idx = ["p1", "p2"]
+    # GBPUSD=X quotes USD per GBP -> used directly
+    fx = di.fetch_fx_rates(["USD", "GBP"], idx, hub="USD",
+                           fetch_fn=_fx_stub({"GBPUSD=X": 1.25}))
+    assert fx["USD"].tolist() == [1.0, 1.0]
+    assert fx["GBP"].tolist() == pytest.approx([1.25, 1.25])
+
+
+def test_fetch_fx_rates_inverts_when_only_reverse_pair_exists():
+    idx = ["p1"]
+    # COPUSD=X does not exist; USDCOP=X quotes COP per USD -> must be inverted
+    fx = di.fetch_fx_rates(["COP"], idx, hub="USD",
+                           fetch_fn=_fx_stub({"USDCOP=X": 4000.0}))
+    assert fx["COP"].iloc[0] == pytest.approx(1 / 4000.0)
+
+
+def test_fetch_fx_rates_raises_when_a_pair_is_unavailable():
+    # The silent-degradation trap: CLPCOP=X 404s and CHFCOP=X is delisted. Filling
+    # the gap with 1.0 (or NaN->0) leaves those names unconverted while the code
+    # reports success -- reintroducing the exact ranking bug. Fail loudly instead.
+    with pytest.raises(ValueError, match="CLP"):
+        di.fetch_fx_rates(["CLP"], ["p1"], hub="USD", fetch_fn=_fx_stub({}))
+
+
+def test_convert_currency_scales_amounts_by_rate():
+    idx = ["p1", "p2"]
+    fx = pd.DataFrame({"USD": [1.0, 1.0], "COP": [0.00025, 0.00025]}, index=idx)
+    amounts = pd.Series({"NVDA": 1e9, "ECOPETROL.CL": 1e9})
+    cur_map = {"NVDA": "USD", "ECOPETROL.CL": "COP"}
+    out = di.convert_currency(amounts, cur_map, fx)          # target=None -> the hub
+    assert out["NVDA"] == pytest.approx(1e9)          # already USD
+    assert out["ECOPETROL.CL"] == pytest.approx(250_000.0)   # 1e9 COP -> 250k USD
+
+
+def test_convert_currency_to_an_arbitrary_target():
+    # The report is denominated in the user's own currency, not the FX hub. The hub
+    # cancels: rate = fx[local] / fx[target].
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0], "COP": [0.00025]}, index=idx)
+    out = di.convert_currency(pd.Series({"NVDA": 100.0}), {"NVDA": "USD"}, fx,
+                              target="COP")
+    assert out["NVDA"] == pytest.approx(400_000.0)    # $100 at 4000 COP/USD
+
+
+def test_convert_currency_target_equal_to_source_is_identity():
+    idx = ["p1"]
+    fx = pd.DataFrame({"COP": [0.00025]}, index=idx)
+    out = di.convert_currency(pd.Series({"ECO.CL": 2700.0}), {"ECO.CL": "COP"}, fx,
+                              target="COP")
+    assert out["ECO.CL"] == pytest.approx(2700.0)
+
+
+@pytest.mark.parametrize("policy,expected", [
+    ("exclude", None),          # dropped
+    ("assume_target", 500.0),   # taken at face value in the target currency
+])
+def test_convert_currency_unknown_policy(policy, expected):
+    # Robustness: an unresolvable currency must not crash the run. Excluding is the
+    # default because assuming the wrong one is how a JPY name gets ranked 150x too
+    # high -- the exact failure the currency work exists to prevent.
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0]}, index=idx)
+    out = di.convert_currency(pd.Series({"MYSTERY": 500.0}), {"MYSTERY": None}, fx,
+                              target="USD", unknown=policy)
+    if expected is None:
+        assert "MYSTERY" not in out.index
+    else:
+        assert out["MYSTERY"] == pytest.approx(expected)
+
+
+def test_convert_currency_rejects_an_unknown_policy_name():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="unknown_currency"):
+        di.convert_currency(pd.Series({"A": 1.0}), {"A": None}, fx, unknown="whatever")
+
+
+def test_convert_currency_excludes_a_currency_missing_from_fx():
+    # Currency resolved, but no FX rate for it -- must behave like any other unknown
+    # rather than raising a KeyError mid-report.
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    out = di.convert_currency(pd.Series({"A": 5.0}), {"A": "XYZ"}, fx, target="USD")
+    assert "A" not in out.index
+
+
+def _universe(n, periods=8):
+    """n synthetic tickers with ADV descending in ticker order (T00 most liquid)."""
+    idx = [f"p{i}" for i in range(periods)]
+    close = pd.DataFrame({f"T{i:02d}": [100.0] * periods for i in range(n)}, index=idx)
+    volume = pd.DataFrame({f"T{i:02d}": [float(n - i)] * periods for i in range(n)}, index=idx)
+    return close, volume
+
+
+def test_select_universe_is_a_noop_when_topn_is_none():
+    # Gate 3: with the screen disabled the pipeline must reproduce today's universe
+    # exactly, so a null topn bypasses every criterion including the eligibility ones.
+    close, volume = _universe(6)
+    assert di.select_universe(close, volume, None) == list(close.columns)
+
+
+def test_select_universe_returns_all_when_topn_exceeds_universe():
+    close, volume = _universe(6)
+    assert di.select_universe(close, volume, 50) == list(close.columns)
+
+
+def test_select_universe_pure_topn_takes_most_liquid():
+    close, volume = _universe(10)
+    assert di.select_universe(close, volume, 3, window=4) == ["T00", "T01", "T02"]
+
+
+def test_select_universe_stratified_reaches_beyond_the_top_band():
+    # The point of strata: a pure top-N gives only mega-caps. [2,1,1] over three
+    # equal ADV bands must draw from the middle and bottom bands too.
+    close, volume = _universe(9)
+    picked = di.select_universe(close, volume, 4, strata=[2, 1, 1], window=4)
+    assert picked[:2] == ["T00", "T01"]        # top band
+    assert "T03" in picked                     # middle band (T03..T05)
+    assert "T06" in picked                     # bottom band (T06..T08)
+    assert len(picked) == 4
+
+
+def test_select_universe_price_floor_excludes_penny_stocks():
+    close, volume = _universe(4)
+    close["T00"] = 0.4                          # most liquid, but sub-floor priced
+    picked = di.select_universe(close, volume, 2, price_floor=1.0, window=4)
+    assert "T00" not in picked
+
+
+def test_select_universe_respects_min_active_fraction():
+    close, volume = _universe(4)
+    volume["T00"] = 0.0                         # never trades
+    picked = di.select_universe(close, volume, 2, min_active_fraction=0.5, window=4)
+    assert "T00" not in picked
+
+
+def test_select_universe_excludes_unknown_currency():
+    close, volume = _universe(3)
+    fx = pd.DataFrame({"USD": [1.0] * 8}, index=close.index)
+    picked = di.select_universe(close, volume, 3, window=4, fx=fx,
+                                cur_map={"T00": None, "T01": "USD", "T02": "USD"})
+    assert picked == ["T01", "T02"]
+
+
+def test_select_universe_is_return_neutral():
+    # THE property that makes the screen safe: a stock that rose 10x must not be
+    # selected for that reason. Screening on past returns hands the model a universe
+    # of pre-selected winners and destroys any read on whether it has skill.
+    close, volume = _universe(6)
+    close["T05"] = [10.0 * (1.6 ** i) for i in range(8)]   # +2500%, least liquid
+    picked = di.select_universe(close, volume, 3, window=4)
+    assert "T05" not in picked
+    assert picked == ["T00", "T01", "T02"]
+
+
+def test_select_universe_applies_market_cap_floor_when_supplied():
+    close, volume = _universe(4)
+    mc = pd.Series({"T00": 1e6, "T01": 1e12, "T02": 1e12, "T03": 1e12})
+    picked = di.select_universe(close, volume, 2, window=4,
+                                market_cap=mc, min_market_cap=1e9)
+    assert "T00" not in picked                  # liquid but tiny
+
+
+def test_select_universe_keeps_names_with_unknown_market_cap():
+    # yfinance returns marketCap=None for ETFs (CSPX.L). Treating missing as zero
+    # would silently delete every ETF from the universe.
+    close, volume = _universe(3)
+    mc = pd.Series({"T00": np.nan, "T01": 1e12, "T02": 1e12})
+    picked = di.select_universe(close, volume, 3, window=4,
+                                market_cap=mc, min_market_cap=1e9)
+    assert "T00" in picked
+
+
 def test_activity_health_counts_and_zero_volume_fraction():
     close, volume = _frames({
         "FULL": ([10, 10, 10, 10], [5, 5, 5, 5]),     # kept
