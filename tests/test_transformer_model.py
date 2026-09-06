@@ -632,3 +632,36 @@ def test_train_runs_rank_ic_shape_and_original_scale():
     assert runs.shape == (1, 4, 5)
     assert np.isfinite(runs).all()
     assert runs.std() < 0.5          # denormalised to return scale, not ~1.0
+
+
+def test_train_and_predict_reports_the_averaged_scale_ratio(capsys):
+    # The per-run ratio printed during training is ~1.7x the averaged one, and the
+    # averaged mu is what reaches the optimiser -- so that is the figure to watch for
+    # drift when the arch, loss or universe size changes.
+    import numpy as np
+    import pandas as pd
+    from transformer_model import train_and_predict
+    rng = np.random.default_rng(0)
+    rets = pd.DataFrame(rng.normal(0, 0.02, (90, 5)),
+                        columns=[f"S{i}" for i in range(5)])
+    cfg = {'time_window': 20, 'periods_to_forecast': 8, 'transformer_forecast_window': 8,
+           'transformer_epochs': 1, 'transformer_warmup_epochs': 0,
+           'transformer_batch_size': 16, 'n_transformer_runs': 2}
+    train_and_predict(rets, cfg, n_runs=2, verbose=True, arch='B')
+    out = capsys.readouterr().out
+    assert "scale ratio of the averaged mu" in out
+    assert "this run alone" in out          # per-run label disambiguated
+
+
+def test_train_and_predict_stays_quiet_when_not_verbose(capsys):
+    import numpy as np
+    import pandas as pd
+    from transformer_model import train_and_predict
+    rng = np.random.default_rng(0)
+    rets = pd.DataFrame(rng.normal(0, 0.02, (90, 5)),
+                        columns=[f"S{i}" for i in range(5)])
+    cfg = {'time_window': 20, 'periods_to_forecast': 8, 'transformer_forecast_window': 8,
+           'transformer_epochs': 1, 'transformer_warmup_epochs': 0,
+           'transformer_batch_size': 16, 'n_transformer_runs': 2}
+    train_and_predict(rets, cfg, n_runs=2, verbose=False, arch='B')
+    assert capsys.readouterr().out == ""
