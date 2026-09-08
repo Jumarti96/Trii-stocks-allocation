@@ -608,3 +608,27 @@ def test_activity_health_counts_and_zero_volume_fraction():
     assert health["n_kept"] == 1
     assert health["n_excluded"] == 2
     assert health["zero_volume_fraction"] == pytest.approx(1 / 3)   # only DEAD has af==0
+
+
+def test_select_universe_gates_read_the_frame_tail_not_as_of():
+    # SHARP EDGE for backtest callers: as_of truncates the LIQUIDITY ranking only.
+    # The price_floor and active_fraction gates read the tail of whatever frame they
+    # are handed, so passing a full-history frame with an early as_of leaks future
+    # data through those gates. Callers must slice the frame themselves; this pins
+    # the behaviour so the requirement is discoverable rather than folklore.
+    idx = [f"p{i}" for i in range(6)]
+    # CHEAP was above the floor early and collapsed later; RICH did the reverse.
+    close = pd.DataFrame({"CHEAP": [100.0] * 3 + [1.0] * 3,
+                          "RICH": [1.0] * 3 + [100.0] * 3}, index=idx)
+    volume = pd.DataFrame({"CHEAP": [1e6] * 6, "RICH": [1.0] * 6}, index=idx)
+
+    # Full frame, as_of early: the floor still judges by the LAST rows, so the name
+    # that was expensive back then is excluded.
+    leaky = di.select_universe(close, volume, topn=1, window=3, price_floor=50.0,
+                               as_of="p2")
+    assert leaky == ["RICH"]
+
+    # Sliced frame: the floor now sees only history up to p2, and CHEAP qualifies.
+    honest = di.select_universe(close.iloc[:3], volume.iloc[:3], topn=1, window=3,
+                                price_floor=50.0, as_of="p2")
+    assert honest == ["CHEAP"]
