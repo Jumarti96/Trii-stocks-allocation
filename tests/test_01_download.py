@@ -196,3 +196,52 @@ def test_a_quote_unit_switch_is_dropped_from_every_artifact(tmp_path, monkeypatc
     assert "FLIP" not in pd.read_csv(tmp_path / "01_prices_usd.csv", index_col=0).columns
     assert "FLIP" not in pd.read_csv(tmp_path / "01_liquidity.csv", index_col=0).index
     assert "NVDA" in _read(paths, "01_returns").columns      # the sane name survives
+
+
+def test_listings_are_reused_without_resume(tmp_path, monkeypatch):
+    # Changing days_of_data needs fresh PRICES but not fresh listings: a listing is
+    # keyed by identifier and says nothing about the price window. Coupling the two
+    # to --resume would force a choice between a stale price panel and re-issuing
+    # 2,923 .info calls, which is what tripped the rate limiter in the first place.
+    mod = _load_script()
+    paths = _stub_step1(mod, tmp_path, monkeypatch)
+    mod.main([])
+
+    fetched = []
+    real_resolve = __import__("data_intake").resolve_listings
+
+    def spy(ids, **kw):
+        def fetch(ident):
+            fetched.append(ident)
+            return {"currency": "USD", "symbol": ident}
+        return real_resolve(ids, fetch_fn=fetch, **{**kw, "retries": 1,
+                                                    "retry_wait": 0.0})
+
+    monkeypatch.setattr(mod, "resolve_listings", spy)
+    mod.main([])                      # no --resume: prices re-downloaded...
+    # ...but the lookup-resolved rows came off disk. MYSTERY is legitimately
+    # re-fetched: it is 'inferred', and inference is a fallback to retry, not an
+    # answer to cache.
+    assert "NVDA" not in fetched
+    assert "ECO.CL" not in fetched
+    assert fetched == ["MYSTERY"]
+
+
+def test_refresh_listings_forces_a_refetch(tmp_path, monkeypatch):
+    mod = _load_script()
+    paths = _stub_step1(mod, tmp_path, monkeypatch)
+    mod.main([])
+
+    fetched = []
+    real_resolve = __import__("data_intake").resolve_listings
+
+    def spy(ids, **kw):
+        def fetch(ident):
+            fetched.append(ident)
+            return {"currency": "USD", "symbol": ident}
+        return real_resolve(ids, fetch_fn=fetch, **{**kw, "retries": 1,
+                                                    "retry_wait": 0.0})
+
+    monkeypatch.setattr(mod, "resolve_listings", spy)
+    mod.main(["--refresh-listings"])
+    assert len(fetched) > 0

@@ -1,3 +1,18 @@
+# ============================================================================
+# PRESERVED CONFIG -- the 10-year setup the Trii book was built and run on.
+#
+# Inactive by design: nothing loads this file. load_config() reads params.yaml
+# and only params.yaml, so the .disabled suffix is what keeps this copy from
+# being picked up, mirroring the stock_tickers/*.csv.inactive convention.
+#
+# To go back to it:      cp params_trii_10y.yaml.disabled params.yaml
+# (back up the live params.yaml first if the global run is still wanted.)
+#
+# The one setting that matters here is days_of_data: 3650. The global experiment
+# raises it to 7300 to double the number of walk-forward windows, which drops
+# every stock listed after ~2010 and so is wrong for the Trii book.
+# ============================================================================
+
 # Stock Allocation Pipeline - Configuration
 #
 # Put the tickers or ISINs you can actually buy in stock_tickers/*.csv (every .csv in
@@ -22,15 +37,7 @@ universe_topn: 500            # how many stocks the model forecasts, picked by l
 # --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
 interval: "1wk"               # "1wk" for weekly, "1mo" for monthly
-days_of_data: 7300            # historical window to download (days). 20y, raised from
-                              # 10y to buy statistical power: at cadence 24 the
-                              # walk-forward gets ~30 windows instead of 13, and the
-                              # study needs 63-125 to resolve the model's effect.
-                              # COSTS: clean_batch drops any name missing >15% of the
-                              # window, so every stock listed after ~2010 leaves the
-                              # catalogue - a smaller universe and WORSE survivorship
-                              # bias. Wrong for the Trii book; see
-                              # params_trii_10y.yaml.disabled to restore 3650.
+days_of_data: 3650            # historical window to download (days)
 periods_to_forecast: 24       # horizon to predict and allocate for; must equal
                               # transformer_forecast_window when transformer_loss is rank_ic
 

@@ -65,6 +65,11 @@ def main(argv=None):
                          "triggers it.")
     ap.add_argument("--listing-pause", type=float, default=0.0,
                     help="seconds to wait between .info calls (single-worker only)")
+    ap.add_argument("--refresh-listings", action="store_true",
+                    help="re-fetch every listing even if 01_currency.csv already "
+                         "resolved it. Rarely wanted: listings are keyed by "
+                         "identifier and do not depend on the price window, so they "
+                         "are reused automatically.")
     args = ap.parse_args(argv)
 
     cfg = load_config()
@@ -117,9 +122,14 @@ def main(argv=None):
     # (CSPX.L is USD despite .L), KY/CN issuers listed in Hong Kong, and cents-quoted
     # Johannesburg lines. Errors run from 1.35x to 100x on exactly the magnitude the
     # universe screen ranks by.
+    # Listing reuse is decoupled from --resume on purpose. A listing is keyed by
+    # identifier and says nothing about the price window, so changing days_of_data
+    # requires fresh PRICES but not fresh currencies -- and re-fetching all 2,923 is
+    # precisely what tripped the rate limiter. Coupling the two would force a choice
+    # between a stale price panel and an hour of avoidable network calls.
     workers = args.listing_workers or cfg["download_workers"]
     existing = None
-    if args.resume and os.path.exists(PATHS["01_currency"]):
+    if not args.refresh_listings and os.path.exists(PATHS["01_currency"]):
         existing = pd.read_csv(PATHS["01_currency"], index_col=0)
     per_call = 0.9 / workers + args.listing_pause
     print(f"Resolving listings for {len(kept)} stocks across {workers} workers "
