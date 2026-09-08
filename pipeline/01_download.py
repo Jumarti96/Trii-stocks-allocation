@@ -68,6 +68,15 @@ def main():
     close_kept = close[kept]
     volume_kept = volume[kept]
 
+    # Checkpoint the expensive part before anything that can raise. The download is
+    # ~45 minutes on a 3.9k catalogue; fetch_fx_rates deliberately raises when a
+    # currency has no available pair, and resolve_listings is another ~15 minutes of
+    # network. Losing all of that to a failure in the last 10% would be maddening,
+    # so the raw panels land now and are rewritten below on the final name set.
+    os.makedirs(os.path.dirname(PATHS["01_prices"]), exist_ok=True)
+    close_kept.to_csv(PATHS["01_prices"])
+    volume_kept.to_csv(PATHS["01_volume"])
+
     # Quote currency + FX to USD. Resolved here (the download step) so step 2 can
     # re-screen the universe repeatedly without touching the network -- experiments
     # sweep universe size off a single download.
@@ -124,10 +133,9 @@ def main():
     volume_kept = volume_kept[final]
     rets = prices_usd.pct_change().iloc[1:]
 
-    os.makedirs(os.path.dirname(PATHS["01_prices"]), exist_ok=True)
-    close_kept.to_csv(PATHS["01_prices"])
-    rets.to_csv(PATHS["01_returns"])
+    close_kept.to_csv(PATHS["01_prices"])          # rewritten on the final name set
     volume_kept.to_csv(PATHS["01_volume"])
+    rets.to_csv(PATHS["01_returns"])
     fx.to_csv(PATHS["01_fx"])
     data_dir = os.path.dirname(PATHS["01_prices"])
     prices_usd.to_csv(os.path.join(data_dir, "01_prices_usd.csv"))
