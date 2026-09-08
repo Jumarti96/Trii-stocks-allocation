@@ -159,17 +159,30 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     over s, scoring net-of-cost Sharpe paired against a fixed baseline; src/backtesting.py supplies
     the schedule, the benchmark strategies and the paired statistics.
 
-    Re-confirmed on a 2,897-stock global catalogue screened to 500 names per window (13
-    non-overlapping 24-week windows from 2020-09, USD returns, n_runs 50). Net Sharpe by
-    spread: s2 0.423, s0 0.421, s1 0.406, s4 0.361 -- the same {0,1,2} over {4} ordering as
-    the original calibration, on a universe 6x wider and in a different currency treatment.
-    s is evidently not doing much work at this size, but nothing argues for moving it.
+    THE ORDERING DOES NOT REPLICATE ACROSS UNIVERSE SIZE, so treat the choice of s as
+    unresolved rather than settled. Two runs on the same 2,897-stock global catalogue,
+    same 13 windows from 2020-09, same USD returns, same n_runs -- differing only in how
+    many names the screen kept -- reorder it completely:
 
-    Read that alongside what the same run says about the model as a whole: it beat both
-    equal-weight (0.423 vs 0.341) and the S&P 500 (0.270) on net Sharpe, but at p=0.24 with
-    8 wins in 13, and random_pct 0.564 puts it at the 56th percentile of random books of the
-    same size. Tuning s is therefore refining a component whose edge over chance is not yet
-    established; n_for_80_power for that effect is 63-125 windows against the 13 available.
+                    n=500            n=300
+        s0      0.421  (2nd)     0.276  (3rd)
+        s1      0.406  (3rd)     0.261  (4th)
+        s2      0.423  (1st)     0.344  (2nd)
+        s4      0.361  (4th)     0.458  (1st)
+
+    s4 is last on one and first on the other. An earlier version of this note read the
+    n=500 run alone as re-confirming the {0,1,2} over {4} ordering; the n=300 run shows
+    that reading was an artifact of a single configuration. 2.0 stays only because
+    nothing has displaced it, not because it has been re-established.
+
+    That instability is what a null result looks like when the sample is too small, and
+    it is consistent with everything else in those runs: the model beat equal-weight and
+    the S&P 500 on net Sharpe both times but never significantly (p=0.24 at n=500, p=0.32
+    at n=300), and random_pct of 0.56-0.59 puts it near the middle of random books of the
+    same size. n_for_80_power runs 63-163 windows against the 13 available. Tuning s
+    against 13 windows is fitting a parameter of a component whose edge over chance is
+    not yet demonstrated -- the differences above are within noise, and reading a ranking
+    off them is how a spurious calibration gets locked in.
 
     s is calibrated against the SCALE of mu, since the draw covariance is s^2 * Sigma / T while mu
     carries its own dispersion. A forecast whose spread is several times wider than reality makes
