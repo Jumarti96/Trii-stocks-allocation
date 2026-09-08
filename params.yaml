@@ -11,10 +11,13 @@ investment: 120000000         # total capital, denominated in report_currency
 report_currency: COP          # ISO code for the report: prices, amounts, share counts
 rf_rate: 0.11                 # risk-free rate IN report_currency (0.11 = 10Y Colombian bond).
                               # Change this whenever you change report_currency.
-universe_topn: 300            # how many stocks the model forecasts, picked by liquidity.
+universe_topn: 500            # how many stocks the model forecasts, picked by liquidity.
                               # No-op if your catalogue is smaller. Do not exceed ~600:
                               # past that the forecast over-disperses badly - see
                               # transformer_model.capacity_report. null disables the screen.
+                              # 300 cut straight through the European large caps
+                              # (TotalEnergies 303, Siemens 327, LVMH 351, UBS 407) and
+                              # left an 89% USD universe - see experiments/universe_profile.py.
 
 # --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
