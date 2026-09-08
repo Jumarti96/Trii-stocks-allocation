@@ -159,30 +159,34 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     over s, scoring net-of-cost Sharpe paired against a fixed baseline; src/backtesting.py supplies
     the schedule, the benchmark strategies and the paired statistics.
 
-    THE ORDERING DOES NOT REPLICATE ACROSS UNIVERSE SIZE, so treat the choice of s as
-    unresolved rather than settled. Two runs on the same 2,897-stock global catalogue,
-    same 13 windows from 2020-09, same USD returns, same n_runs -- differing only in how
-    many names the screen kept -- reorder it completely:
+    S IS NOT IDENTIFIED BY THE AVAILABLE DATA. Three walk-forward runs on the global
+    catalogue produced three different orderings, with every spread taking both the top
+    and the bottom slot depending on the configuration:
 
-                    n=500            n=300
-        s0      0.421  (2nd)     0.276  (3rd)
-        s1      0.406  (3rd)     0.261  (4th)
-        s2      0.423  (1st)     0.344  (2nd)
-        s4      0.361  (4th)     0.458  (1st)
+                  n=500/10y      n=300/10y      n=300/15y
+        s0      0.421  (2nd)   0.276  (3rd)   0.237  (1st)
+        s1      0.406  (3rd)   0.261  (4th)   0.216  (2nd)
+        s2      0.423  (1st)   0.344  (2nd)   0.202  (3rd)
+        s4      0.361  (4th)   0.458  (1st)   0.189  (4th)
 
-    s4 is last on one and first on the other. An earlier version of this note read the
-    n=500 run alone as re-confirming the {0,1,2} over {4} ordering; the n=300 run shows
-    that reading was an artifact of a single configuration. 2.0 stays only because
-    nothing has displaced it, not because it has been re-established.
+    The first two differ only in how many names the screen kept; the third adds five
+    years of calendar (20 windows from 2011 instead of 13 from 2020) and is the best
+    powered and best conditioned of the three -- 13 of its windows are capacity 'ok'
+    and none are 'error', against 4 'error' and no 'ok' in the n=500 run.
 
-    That instability is what a null result looks like when the sample is too small, and
-    it is consistent with everything else in those runs: the model beat equal-weight and
-    the S&P 500 on net Sharpe both times but never significantly (p=0.24 at n=500, p=0.32
-    at n=300), and random_pct of 0.56-0.59 puts it near the middle of random books of the
-    same size. n_for_80_power runs 63-163 windows against the 13 available. Tuning s
-    against 13 windows is fitting a parameter of a component whose edge over chance is
-    not yet demonstrated -- the differences above are within noise, and reading a ranking
-    off them is how a spurious calibration gets locked in.
+    An earlier version of this note read the n=500 run alone as re-confirming the
+    {0,1,2} over {4} ordering. It was an artifact of one configuration. 2.0 stays
+    because nothing has displaced it, NOT because it has been re-established, and a
+    future sweep should be treated as calibrating from scratch.
+
+    The instability is consistent with everything else these runs show. The model beat
+    equal-weight and the S&P 500 on net Sharpe every time but never significantly
+    (p=0.24, 0.25, 0.39), and random_pct -- its percentile among random books of the
+    same size -- ran 0.56, 0.58, then 0.52-0.55 on the best-powered run, i.e. drifting
+    toward the coin flip as power improved. n_for_80_power is 204-392 windows there,
+    against 20. Tuning s against samples this size fits a parameter of a component whose
+    edge over chance is not demonstrated; the differences above are noise, and reading a
+    ranking off them is how a spurious calibration gets locked in.
 
     s is calibrated against the SCALE of mu, since the draw covariance is s^2 * Sigma / T while mu
     carries its own dispersion. A forecast whose spread is several times wider than reality makes
