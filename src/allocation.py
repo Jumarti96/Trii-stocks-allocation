@@ -159,6 +159,18 @@ def resampled_michaud(returns, covmat, cfg, n_periods):
     over s, scoring net-of-cost Sharpe paired against a fixed baseline; src/backtesting.py supplies
     the schedule, the benchmark strategies and the paired statistics.
 
+    Re-confirmed on a 2,897-stock global catalogue screened to 500 names per window (13
+    non-overlapping 24-week windows from 2020-09, USD returns, n_runs 50). Net Sharpe by
+    spread: s2 0.423, s0 0.421, s1 0.406, s4 0.361 -- the same {0,1,2} over {4} ordering as
+    the original calibration, on a universe 6x wider and in a different currency treatment.
+    s is evidently not doing much work at this size, but nothing argues for moving it.
+
+    Read that alongside what the same run says about the model as a whole: it beat both
+    equal-weight (0.423 vs 0.341) and the S&P 500 (0.270) on net Sharpe, but at p=0.24 with
+    8 wins in 13, and random_pct 0.564 puts it at the 56th percentile of random books of the
+    same size. Tuning s is therefore refining a component whose edge over chance is not yet
+    established; n_for_80_power for that effect is 63-125 windows against the 13 available.
+
     s is calibrated against the SCALE of mu, since the draw covariance is s^2 * Sigma / T while mu
     carries its own dispersion. A forecast whose spread is several times wider than reality makes
     that perturbation negligible and collapses the consensus back onto the raw msr solution --
