@@ -22,15 +22,21 @@ universe_topn: 500            # how many stocks the model forecasts, picked by l
 # --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
 interval: "1wk"               # "1wk" for weekly, "1mo" for monthly
-days_of_data: 7300            # historical window to download (days). 20y, raised from
-                              # 10y to buy statistical power: at cadence 24 the
-                              # walk-forward gets ~30 windows instead of 13, and the
-                              # study needs 63-125 to resolve the model's effect.
-                              # COSTS: clean_batch drops any name missing >15% of the
-                              # window, so every stock listed after ~2010 leaves the
-                              # catalogue - a smaller universe and WORSE survivorship
-                              # bias. Wrong for the Trii book; see
-                              # params_trii_10y.yaml.disabled to restore 3650.
+days_of_data: 5475            # historical window to download (days). 15y, raised from
+                              # 10y to buy statistical power: at cadence 24 with
+                              # min_train 300 the walk-forward gets 20 windows instead
+                              # of 13 (the study needs 63-125 to resolve the model's
+                              # effect, so this narrows the gap rather than closing it).
+                              #
+                              # 15y and not 20y because clean_batch drops any name
+                              # missing >15% of the window. Measured at 20y: 45 of the
+                              # top 300 vanished, including TSLA, META, NOW, BABA,
+                              # PANW, ABBV, SHOP and ANET -- the entire post-2009 IPO
+                              # cohort, which is exactly what drove 2016-2026 returns.
+                              # Against a 2011 start both TSLA (2010) and META (2012)
+                              # clear the threshold; only post-2013 listings are lost.
+                              #
+                              # Wrong for the Trii book; see params_trii_10y.yaml.disabled.
 periods_to_forecast: 24       # horizon to predict and allocate for; must equal
                               # transformer_forecast_window when transformer_loss is rank_ic
 
