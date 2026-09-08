@@ -5,14 +5,23 @@ Downloads Close+Volume for every ticker/ISIN in stock_tickers/*.csv in parallel 
 universe early by an activity filter (keep stocks that trade in >= liquidity_min_active_fraction of
 recent periods) plus the bad-data drop, and writes the PRUNED prices/returns.
 
+Listings and FX are resolved BEFORE returns are computed, because returns are taken on
+USD-converted prices -- see the comment above convert_panel below for why native-price
+pct_change() is not summable across a multi-currency universe.
+
 Outputs (data/):
-    01_prices.csv     - adjusted close prices for the kept (active) universe
-    01_returns.csv    - period returns for the kept universe
+    01_prices.csv     - adjusted close prices, in each stock's NATIVE currency
+    01_prices_usd.csv - the same prices converted to USD (the basis of 01_returns)
+    01_returns.csv    - period returns in USD for the kept universe
     01_volume.csv     - period volume, for the step-2 universe screen
     01_currency.csv   - per identifier: quote currency, minor-unit factor, trading
-                        symbol, name, resolution source
+                        symbol, name, resolution source, sector, industry, market cap,
+                        exchange, quote type
     01_fx.csv         - per-period conversion rate into USD, one column per currency
     01_liquidity.csv  - per kept ticker: avg_dollar_volume (info), active_fraction, kept (audit)
+
+Every price/volume/returns artifact is written on the same name set: stocks whose
+currency cannot be resolved are dropped from all of them together.
 """
 
 import os
@@ -29,7 +38,7 @@ import pandas as pd
 
 from config import load_config, PATHS, BASE_DIR
 from data_intake import (load_tickers, download_all, activity_filter, activity_health,
-                         resolve_listings, fetch_fx_rates)
+                         resolve_listings, fetch_fx_rates, convert_panel)
 
 
 def main():
@@ -58,13 +67,6 @@ def main():
 
     close_kept = close[kept]
     volume_kept = volume[kept]
-    rets = close_kept.pct_change().iloc[1:]
-
-    os.makedirs(os.path.dirname(PATHS["01_prices"]), exist_ok=True)
-    close_kept.to_csv(PATHS["01_prices"])
-    rets.to_csv(PATHS["01_returns"])
-    volume_kept.to_csv(PATHS["01_volume"])
-    detail.loc[kept].to_csv(os.path.join(os.path.dirname(PATHS["01_prices"]), "01_liquidity.csv"))
 
     # Quote currency + FX to USD. Resolved here (the download step) so step 2 can
     # re-screen the universe repeatedly without touching the network -- experiments
@@ -95,11 +97,44 @@ def main():
 
     currencies = sorted(cur_df["currency"].dropna().unique())
     fx = fetch_fx_rates(currencies, close_kept.index, hub="USD")
-    fx.to_csv(PATHS["01_fx"])
     print(f"Currencies: {len(currencies)} -> {currencies}")
 
-    print(f"Prices  shape: {close_kept.shape}")
-    print(f"Returns shape: {rets.shape}")
+    # Returns are computed on USD-converted prices, NOT on native ones. A flat
+    # COP-quoted stock held through a 20% peso depreciation lost 20% in the hands of
+    # anyone whose wealth is not measured in pesos, and pct_change() on the native
+    # price scores that as zero. Summing native returns across 40-odd currencies adds
+    # up quantities that are not the same unit, and it makes any comparison against a
+    # USD benchmark such as the S&P 500 meaningless.
+    #
+    # 01_prices.csv stays NATIVE on purpose: select_universe (step 2) and the report
+    # (step 4) each apply their own conversion from it, and pre-converting would make
+    # them convert twice.
+    prices_usd = convert_panel(close_kept, cur_df["currency"].to_dict(), fx,
+                               unit_factors=cur_df["unit_factor"].to_dict(),
+                               unknown=cfg["unknown_currency"])
+    unconverted = [t for t in close_kept.columns if t not in prices_usd.columns]
+    if unconverted:
+        print(f"  Dropped {len(unconverted)} stocks with no usable FX rate "
+              f"(unknown_currency={cfg['unknown_currency']}): {unconverted[:15]}")
+
+    # Every artifact is written on the SAME name set, so downstream steps that zip
+    # prices against returns against volume cannot silently misalign.
+    final = list(prices_usd.columns)
+    close_kept = close_kept[final]
+    volume_kept = volume_kept[final]
+    rets = prices_usd.pct_change().iloc[1:]
+
+    os.makedirs(os.path.dirname(PATHS["01_prices"]), exist_ok=True)
+    close_kept.to_csv(PATHS["01_prices"])
+    rets.to_csv(PATHS["01_returns"])
+    volume_kept.to_csv(PATHS["01_volume"])
+    fx.to_csv(PATHS["01_fx"])
+    data_dir = os.path.dirname(PATHS["01_prices"])
+    prices_usd.to_csv(os.path.join(data_dir, "01_prices_usd.csv"))
+    detail.loc[final].to_csv(os.path.join(data_dir, "01_liquidity.csv"))
+
+    print(f"Prices  shape: {close_kept.shape} (native)")
+    print(f"Returns shape: {rets.shape} (USD)")
     print(f"  Step 1 completed in {time.time() - t0:.1f}s")
 
 

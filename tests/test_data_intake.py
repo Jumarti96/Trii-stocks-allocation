@@ -300,6 +300,37 @@ def test_resolve_listings_falls_back_to_the_identifier_as_symbol():
     assert got.loc["ECOPETROL.CL", "symbol"] == "ECOPETROL.CL"
 
 
+def test_resolve_listings_captures_classification_fields():
+    # Sector, size and instrument type ride along in the .info call already being
+    # made, so capturing them costs nothing -- and without them there is no way to
+    # audit whether a top-N liquidity screen keeps a sensible slice of the catalogue.
+    got = di.resolve_listings(
+        ["US67066G1040"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "NVDA",
+                            "sector": "Technology", "industry": "Semiconductors",
+                            "marketCap": 4.2e12, "exchange": "NMS",
+                            "quoteType": "EQUITY"})
+    row = got.loc["US67066G1040"]
+    assert row["sector"] == "Technology"
+    assert row["industry"] == "Semiconductors"
+    assert row["market_cap"] == pytest.approx(4.2e12)
+    assert row["exchange"] == "NMS"
+    assert row["quote_type"] == "EQUITY"
+
+
+def test_resolve_listings_leaves_a_missing_market_cap_as_nan():
+    # yfinance reports no marketCap for ETFs. Zero-filling would make every ETF fail
+    # select_universe's min_market_cap gate, which deliberately keeps NaN so they
+    # survive -- so the absence has to stay distinguishable from a genuine zero.
+    got = di.resolve_listings(
+        ["IE00B5BMR087"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "CSPX.L",
+                            "quoteType": "ETF"})
+    assert pd.isna(got.loc["IE00B5BMR087", "market_cap"])
+    assert got.loc["IE00B5BMR087", "quote_type"] == "ETF"
+    assert pd.isna(got.loc["IE00B5BMR087", "sector"])
+
+
 def test_convert_currency_applies_unit_factors():
     idx = ["p1"]
     fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
@@ -402,6 +433,80 @@ def test_convert_currency_excludes_a_currency_missing_from_fx():
     fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
     out = di.convert_currency(pd.Series({"A": 5.0}), {"A": "XYZ"}, fx, target="USD")
     assert "A" not in out.index
+
+
+def test_convert_panel_scales_each_period_by_that_period_s_rate():
+    # The whole point of the panel form: a fixed-rate conversion would leave FX moves
+    # out of the returns, which is the bug it exists to fix.
+    idx = ["p1", "p2", "p3"]
+    fx = pd.DataFrame({"USD": [1.0, 1.0, 1.0], "COP": [0.00025, 0.00020, 0.00025]},
+                      index=idx)
+    prices = pd.DataFrame({"NVDA": [100.0, 100.0, 100.0],
+                           "ECO.CL": [4000.0, 4000.0, 4000.0]}, index=idx)
+    out = di.convert_panel(prices, {"NVDA": "USD", "ECO.CL": "COP"}, fx)
+    assert out["NVDA"].tolist() == pytest.approx([100.0, 100.0, 100.0])
+    assert out["ECO.CL"].tolist() == pytest.approx([1.0, 0.8, 1.0])
+    # A flat native price still produces a return, because COP depreciated.
+    assert out["ECO.CL"].pct_change().iloc[1] == pytest.approx(-0.2)
+
+
+def test_convert_panel_is_identity_for_a_hub_only_panel():
+    idx = ["p1", "p2"]
+    fx = pd.DataFrame({"USD": [1.0, 1.0]}, index=idx)
+    prices = pd.DataFrame({"A": [10.0, 11.0], "B": [5.0, 5.5]}, index=idx)
+    out = di.convert_panel(prices, {"A": "USD", "B": "USD"}, fx)
+    pd.testing.assert_frame_equal(out, prices)
+
+
+def test_convert_panel_applies_unit_factors():
+    idx = ["p1"]
+    fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
+    prices = pd.DataFrame({"VOD.L": [7000.0], "NVDA": [100.0]}, index=idx)
+    out = di.convert_panel(prices, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
+                           unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
+    assert out["VOD.L"].iloc[0] == pytest.approx(70.0 * 1.35)   # pence, not pounds
+    assert out["NVDA"].iloc[0] == pytest.approx(100.0)
+
+
+def test_convert_panel_to_an_arbitrary_target():
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0], "COP": [0.00025]}, index=idx)
+    out = di.convert_panel(pd.DataFrame({"NVDA": [100.0]}, index=idx),
+                           {"NVDA": "USD"}, fx, target="COP")
+    assert out["NVDA"].iloc[0] == pytest.approx(400_000.0)
+
+
+@pytest.mark.parametrize("policy,expected", [
+    ("exclude", None),          # column dropped entirely
+    ("assume_target", 500.0),   # taken at face value
+])
+def test_convert_panel_unknown_policy(policy, expected):
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0]}, index=idx)
+    prices = pd.DataFrame({"MYSTERY": [500.0], "NVDA": [100.0]}, index=idx)
+    out = di.convert_panel(prices, {"MYSTERY": None, "NVDA": "USD"}, fx,
+                           unknown=policy)
+    assert "NVDA" in out.columns
+    if expected is None:
+        assert "MYSTERY" not in out.columns
+    else:
+        assert out["MYSTERY"].iloc[0] == pytest.approx(expected)
+
+
+def test_convert_panel_rejects_an_unknown_policy_name():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="unknown_currency"):
+        di.convert_panel(pd.DataFrame({"A": [1.0]}, index=["p1"]), {"A": None}, fx,
+                         unknown="whatever")
+
+
+def test_convert_panel_raises_when_fx_does_not_cover_every_period():
+    # Silent misalignment would convert some periods at a neighbouring week's rate,
+    # producing fabricated returns. Refuse instead.
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    prices = pd.DataFrame({"A": [1.0, 2.0]}, index=["p1", "p2"])
+    with pytest.raises(ValueError, match="p2"):
+        di.convert_panel(prices, {"A": "USD"}, fx)
 
 
 def _universe(n, periods=8):

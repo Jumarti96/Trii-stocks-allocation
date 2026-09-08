@@ -246,7 +246,8 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
     """Authoritative listing metadata per identifier, falling back to inference.
 
     Returns a DataFrame indexed by the input identifier, with columns
-    ['currency', 'unit_factor', 'symbol', 'name', 'source'].
+    ['currency', 'unit_factor', 'symbol', 'name', 'source', 'sector', 'industry',
+    'market_cap', 'exchange', 'quote_type'].
 
     **Currency**: the exchange-suffix and ISIN-country tables are heuristics, measured
     at 87.5% over a 56-name stratified sample. The failures are not evenly spread:
@@ -262,6 +263,13 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
     ISIN catalogue produces ISIN-labelled data all the way to the allocation report --
     'US67066G1040' rather than 'NVDA', which cannot be traded against. The symbol
     arrives in the same call as the currency, so capturing it is free.
+
+    **Classification**: sector, industry, market_cap, exchange and quote_type ride
+    along in the same response. They are what make a top-N liquidity screen auditable
+    -- whether the survivors span the sectors, how much of the catalogue's market cap
+    they cover, and whether ETFs (whose ADV dwarfs single stocks) are crowding real
+    companies out of the ranking. market_cap is also the only data source for
+    select_universe's min_market_cap gate.
 
     Costs one network round-trip per identifier (~0.6-1.6s), so it is issued across
     `workers` threads and cached: step 1 writes 01_currency.csv and step 2 only reads
@@ -286,6 +294,14 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
             "symbol": info.get("symbol") or ident,
             "name": info.get("shortName") or info.get("longName") or "",
             "source": source,
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            # Left as None when absent, never 0.0: yfinance reports no marketCap for
+            # ETFs, and select_universe's min_market_cap gate keeps NaN on purpose so
+            # they survive the screen. Zero-filling would delete every one of them.
+            "market_cap": info.get("marketCap"),
+            "exchange": info.get("exchange"),
+            "quote_type": info.get("quoteType"),
         }
 
     ids = list(identifiers)
@@ -414,6 +430,61 @@ def convert_currency(amounts, cur_map, fx, target=None, when=-1, unit_factors=No
         else:
             scale[t] = None
     return (amounts * pd.Series(scale, dtype="float64")).dropna()
+
+
+def convert_panel(prices, cur_map, fx, target=None, unit_factors=None,
+                  unknown="exclude"):
+    """Convert a whole price panel into `target`, each period at its own FX rate.
+
+    prices: DataFrame (period x ticker) of local-currency prices. Arguments otherwise
+    match convert_currency, of which this is the per-period generalisation: that one
+    converts a snapshot at a single `when`, this one converts every row.
+
+    The difference matters for returns. pct_change() on native prices treats a flat
+    COP-quoted stock as a flat holding, when a USD investor holding it through a 20%
+    peso depreciation lost 20%. Converting first puts the FX move inside the return,
+    which is what makes a multi-currency universe summable at all -- and what makes a
+    comparison against a USD benchmark such as the S&P 500 mean anything.
+
+    Tickers whose currency is unresolved or has no FX column are DROPPED under the
+    default 'exclude' policy -- whole columns, not scattered NaNs, so a caller that
+    zips the result against another frame cannot silently misalign.
+
+    Raises ValueError if `fx` does not cover every period in `prices`. Reindexing with
+    a gap would convert those rows at a neighbouring week's rate and manufacture a
+    return that never happened, so the gap is reported rather than filled.
+    """
+    if unknown not in UNKNOWN_CURRENCY_POLICIES:
+        raise ValueError(
+            f"unknown_currency policy must be one of {UNKNOWN_CURRENCY_POLICIES}, "
+            f"got {unknown!r}")
+
+    missing_periods = [p for p in prices.index if p not in fx.index]
+    if missing_periods:
+        raise ValueError(
+            f"fx is missing {len(missing_periods)} of the panel's periods, e.g. "
+            f"{missing_periods[:5]}. Refusing to convert: filling the gap would "
+            f"price those rows at another period's rate.")
+
+    rates = fx.loc[prices.index]
+    denom = 1.0 if target is None else rates[target]
+
+    scales, dropped = {}, []
+    for t in prices.columns:
+        cur = cur_map.get(t)
+        factor = 1.0 if unit_factors is None else unit_factors.get(t, 1.0)
+        if cur in rates.columns:
+            scales[t] = rates[cur] * factor / denom
+        elif unknown == "assume_target":
+            scales[t] = pd.Series(factor, index=prices.index)
+        else:
+            dropped.append(t)
+
+    kept = [t for t in prices.columns if t not in dropped]
+    if not kept:
+        return prices.iloc[:, :0].copy()
+    scale = pd.DataFrame(scales)[kept]
+    return prices[kept] * scale
 
 
 def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None,

@@ -125,7 +125,21 @@ def main():
         index=rets.columns, columns=rets.columns
     )
 
-    # Current and forecasted prices (full universe)
+    # Current and forecasted prices (full universe).
+    #
+    # The model is trained on USD returns (step 1 converts prices before taking
+    # pct_change), so `preds_df` compounds a USD growth factor onto a NATIVE price.
+    # That mixture is deliberate and exact rather than sloppy: step 4 converts the
+    # current and the forecasted price with the same latest FX rate, so the rate
+    # cancels and the reported forecast equals current_price_usd * growth_usd,
+    # expressed in report_currency. Keeping both legs native means step 4's single
+    # conversion path stays untouched.
+    #
+    # The assumption this encodes is FX FLAT FROM TODAY: the model forecasts a USD
+    # return and we decline to also forecast the exchange rate. For a report
+    # denominated in COP holding mostly foreign stocks, that is a real and
+    # unhedged source of error in the price column -- the weights, being
+    # dimensionless, are unaffected.
     current_prices    = prices.iloc[-1]
     forecasted_prices = current_prices * (preds_df + 1).prod()
 
