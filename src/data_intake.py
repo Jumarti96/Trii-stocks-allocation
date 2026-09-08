@@ -324,11 +324,20 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1,
                     # Exponential: a rate-limit block outlasts a flat retry, and
                     # hammering it is what extended the block in the first place.
                     time.sleep(retry_wait * (2 ** attempt))
+        # A response that names neither a currency nor a symbol nor a name did not
+        # actually answer. yfinance swallows an HTTP 401 internally and returns a
+        # near-empty dict rather than raising, so exception-based detection misses it
+        # completely: the 20-year download put 87 names on heuristic currencies, 10 of
+        # them inside the top 300, while reporting 0 failures. Treat that as 'failed'
+        # so it is retried and visible. A response that DOES identify the instrument
+        # but omits the currency is a genuine gap, and inference is the right answer.
+        identified = bool(info.get("symbol") or info.get("shortName")
+                          or info.get("longName"))
         cur, factor = normalise_currency_code(info.get("currency"))
         source = "lookup"
         if cur is None:
             cur, factor = infer_currency(ident), 1.0
-            source = "failed" if failed else "inferred"
+            source = "failed" if (failed or not identified) else "inferred"
         return {
             "currency": cur,
             "unit_factor": factor,

@@ -240,9 +240,14 @@ def test_resolve_listings_prefers_the_authoritative_lookup():
 
 
 def test_resolve_listings_falls_back_to_inference_when_lookup_is_empty():
-    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    # An empty response still yields a usable currency, so the run continues -- but
+    # it is recorded as 'failed', not 'inferred'. _yf_listing returns None only when
+    # it caught an exception, so None means the call did not answer, and a resume
+    # must retry it rather than trust the heuristic forever.
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None,
+                              retries=1, retry_wait=0.0)
     assert got.loc["ECOPETROL.CL", "currency"] == "COP"
-    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+    assert got.loc["ECOPETROL.CL", "source"] == "failed"
 
 
 def test_resolve_listings_records_the_minor_unit_factor():
@@ -264,11 +269,15 @@ def test_resolve_listings_parallel_preserves_input_order():
 def test_resolve_listings_parallel_matches_sequential():
     ids = ["A.L", "B", "C.SN"]
     fetch = lambda s: {"A.L": {"currency": "GBp"}, "B": {"currency": "USD"}}.get(s)
-    seq = di.resolve_listings(ids, fetch_fn=fetch, workers=1)
-    par = di.resolve_listings(ids, fetch_fn=fetch, workers=4)
+    kw = dict(fetch_fn=fetch, retries=1, retry_wait=0.0)
+    seq = di.resolve_listings(ids, workers=1, **kw)
+    par = di.resolve_listings(ids, workers=4, **kw)
     pd.testing.assert_frame_equal(seq, par)
     assert par.loc["A.L", "unit_factor"] == 0.01        # pence survives threading
-    assert par.loc["C.SN", "source"] == "inferred"      # fallback survives threading
+    # C.SN got no response at all -> 'failed' (retryable), with inference filling in
+    # meanwhile so the batch still completes.
+    assert par.loc["C.SN", "source"] == "failed"
+    assert par.loc["C.SN", "currency"] == "CLP"
 
 
 def test_resolve_listings_survives_a_failing_lookup():
@@ -823,3 +832,28 @@ def test_drop_implausible_names_catches_a_collapse_as_well_as_a_spike():
     rets = pd.DataFrame({"CRASH": [0.01, -0.995, 120.0, 0.0]})
     kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
     assert dropped == ["CRASH"]
+
+
+def test_an_empty_response_is_failed_not_inferred():
+    # yfinance swallows an HTTP 401 internally and returns a near-empty dict instead
+    # of raising, so exception-based failure detection misses it entirely. On the
+    # 20-year download that put 87 names on heuristic currencies -- 10 of them inside
+    # the top 300 -- while the run reported 0 failures. A response naming neither a
+    # currency nor a symbol nor a name is an absence of evidence, not evidence of
+    # absence, and must be retried rather than trusted.
+    got = di.resolve_listings(["DE0008051004"],
+                              fetch_fn=lambda s: {"trailingPegRatio": None},
+                              retries=1, retry_wait=0.0)
+    assert got.loc["DE0008051004", "source"] == "failed"
+
+
+def test_a_response_that_identifies_the_instrument_is_inferred_not_failed():
+    # The other side: the provider knows the listing and simply reports no currency
+    # field. Inference is the right answer there, and marking it 'failed' would make
+    # every resume re-fetch a name that will never improve.
+    got = di.resolve_listings(["ECOPETROL.CL"],
+                              fetch_fn=lambda s: {"symbol": "ECOPETROL.CL",
+                                                  "shortName": "Ecopetrol SA"},
+                              retries=1, retry_wait=0.0)
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+    assert got.loc["ECOPETROL.CL", "name"] == "Ecopetrol SA"
