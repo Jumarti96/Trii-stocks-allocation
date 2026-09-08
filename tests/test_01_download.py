@@ -83,7 +83,7 @@ def test_returns_are_denominated_in_usd_not_native_prices(tmp_path, monkeypatch)
     # depreciation lost half their money, and that is what must land in 01_returns.
     mod = _load_script()
     paths = _stub_step1(mod, tmp_path, monkeypatch)
-    mod.main()
+    mod.main([])
 
     rets = _read(paths, "01_returns")
     assert rets["NVDA"].abs().max() == pytest.approx(0.0)     # USD name, flat, stays flat
@@ -96,7 +96,7 @@ def test_prices_stay_native_while_a_usd_panel_is_written_alongside(tmp_path, mon
     # apply their own conversion from it, so pre-converting would convert twice.
     mod = _load_script()
     paths = _stub_step1(mod, tmp_path, monkeypatch)
-    mod.main()
+    mod.main([])
 
     native = _read(paths, "01_prices")
     usd = pd.read_csv(tmp_path / "01_prices_usd.csv", index_col=0)
@@ -110,7 +110,7 @@ def test_an_unconvertible_stock_is_dropped_from_every_artifact(tmp_path, monkeyp
     # caller that zips the two, so the drop has to be applied everywhere at once.
     mod = _load_script()
     paths = _stub_step1(mod, tmp_path, monkeypatch)
-    mod.main()
+    mod.main([])
 
     names = set(_read(paths, "01_prices").columns)
     assert "MYSTERY" not in names
@@ -123,7 +123,7 @@ def test_assume_target_keeps_the_unresolved_name(tmp_path, monkeypatch):
     mod = _load_script()
     paths = _stub_step1(mod, tmp_path, monkeypatch,
                         cfg_overrides={"unknown_currency": "assume_target"})
-    mod.main()
+    mod.main([])
     assert "MYSTERY" in _read(paths, "01_returns").columns
 
 
@@ -132,9 +132,50 @@ def test_currency_file_carries_the_classification_columns(tmp_path, monkeypatch)
     # persisting them the only way to get them back is another 3,000-call pass.
     mod = _load_script()
     paths = _stub_step1(mod, tmp_path, monkeypatch)
-    mod.main()
+    mod.main([])
 
     cur = _read(paths, "01_currency")
     for col in ("sector", "industry", "market_cap", "exchange", "quote_type"):
         assert col in cur.columns
     assert cur.loc["NVDA", "sector"] == "Technology"
+
+
+def test_resume_reuses_prices_and_only_refetches_unresolved_listings(tmp_path, monkeypatch):
+    # The repair path. A rate-limited run leaves most rows guessed; re-running must
+    # cost only the failed lookups, not another 20 minutes of price downloads.
+    mod = _load_script()
+    paths = _stub_step1(mod, tmp_path, monkeypatch)
+    mod.main([])                                  # first pass populates the panels
+
+    downloads, fetched = [], []
+    monkeypatch.setattr(mod, "download_all",
+                        lambda t, c: downloads.append(t) or (_ for _ in ()).throw(
+                            AssertionError("--resume must not re-download prices")))
+
+    # One row already resolved by lookup, one that failed and must be retried.
+    partial = pd.DataFrame(
+        {"currency": ["USD", "EUR"], "unit_factor": [1.0, 1.0],
+         "symbol": ["NVDA", "ECO.CL"], "name": ["NVIDIA", None],
+         "source": ["lookup", "failed"], "sector": ["Technology", None],
+         "industry": [None, None], "market_cap": [4.2e12, None],
+         "exchange": [None, None], "quote_type": [None, None]},
+        index=["NVDA", "ECO.CL"])
+    partial.to_csv(paths["01_currency"])
+
+    real_resolve = __import__("data_intake").resolve_listings
+
+    def spy(ids, **kw):
+        def fetch(ident):
+            fetched.append(ident)
+            return {"currency": "COP", "symbol": "ECOPETROL.CL"}
+        return real_resolve(ids, fetch_fn=fetch, **{**kw, "retries": 1,
+                                                    "retry_wait": 0.0})
+
+    monkeypatch.setattr(mod, "resolve_listings", spy)
+    mod.main(["--resume"])
+
+    assert downloads == []                        # prices came off disk
+    assert fetched == ["ECO.CL"]                  # only the failed row was retried
+    cur = _read(paths, "01_currency")
+    assert cur.loc["NVDA", "sector"] == "Technology"     # reused verbatim
+    assert cur.loc["ECO.CL", "source"] == "lookup"       # repaired

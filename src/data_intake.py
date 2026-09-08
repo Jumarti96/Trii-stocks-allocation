@@ -15,6 +15,7 @@ orchestrator and the experiment/test suite can import these functions directly.
 import datetime
 import glob as _glob
 import re
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -242,12 +243,40 @@ def _yf_listing(identifier):
         return None
 
 
-def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
+RESOLVED_SOURCES = ("lookup",)          # rows a resume can safely keep
+
+
+def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1,
+                     existing=None, retries=3, retry_wait=2.0, pause=0.0):
     """Authoritative listing metadata per identifier, falling back to inference.
 
     Returns a DataFrame indexed by the input identifier, with columns
     ['currency', 'unit_factor', 'symbol', 'name', 'source', 'sector', 'industry',
     'market_cap', 'exchange', 'quote_type'].
+
+    `source` records HOW each row was obtained, and the distinction is load-bearing:
+        'lookup'   - authoritative, from the provider
+        'inferred' - the provider answered but named no currency; heuristic used
+        'failed'   - the call did not come back; heuristic used, RETRY THIS ROW
+
+    Separating the last two is what makes a rate-limited run recoverable. Collapsing
+    them once let a 2,930-name catalogue finish "successfully" with 54% of its
+    currencies guessed, and the guesses were worst exactly where the screen is most
+    sensitive: NL0015000RT3 is NRP.JO quoted in Johannesburg cents, but its Dutch
+    ISIN prefix inferred EUR, so it carried both the wrong rate and a missing 100x
+    minor-unit factor -- enough to float it to rank 2 of a global liquidity ranking.
+
+    existing: a previously written frame (i.e. 01_currency.csv). Rows whose source is
+        'lookup' are reused verbatim and cost no network call; everything else --
+        'failed', 'inferred', or absent -- is fetched again. Inference is a fallback,
+        not an answer, so a later pass that can reach the network should replace it.
+    retries/retry_wait: attempts per identifier and the base for exponential backoff.
+        Rate limiting is transient; the default retry ladder rides out a short block
+        rather than silently degrading to heuristics.
+    pause: seconds between calls when single-threaded. Measured: three workers with no
+        pause got blocked partway through 2,930 names, while one worker at 1.5s ran
+        clean. Slower in theory, faster in practice than a run whose second half is
+        guesswork.
 
     **Currency**: the exchange-suffix and ISIN-country tables are heuristics, measured
     at 87.5% over a 56-name stratified sample. The failures are not evenly spread:
@@ -274,20 +303,31 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
     Costs one network round-trip per identifier (~0.6-1.6s), so it is issued across
     `workers` threads and cached: step 1 writes 01_currency.csv and step 2 only reads
     it. A single failed lookup falls back to inference rather than aborting the run --
-    at 3,000 names, something will always fail.
+    at 3,000 names, something will always fail. Note that concurrency and rate limits
+    pull in opposite directions here: three workers over 2,930 names was enough to get
+    blocked, and the recovery pass runs single-threaded on purpose.
     """
     if fetch_fn is None:
         fetch_fn = _yf_listing
 
     def one(ident):
-        try:
-            info = fetch_fn(ident) or {}
-        except Exception:  # noqa: BLE001 - a bad identifier must not sink the batch
-            info = {}
+        info, failed = {}, False
+        for attempt in range(max(1, retries)):
+            try:
+                info = fetch_fn(ident) or {}
+                failed = False
+                break
+            except Exception:  # noqa: BLE001 - a bad identifier must not sink the batch
+                info, failed = {}, True
+                if attempt + 1 < max(1, retries) and retry_wait:
+                    # Exponential: a rate-limit block outlasts a flat retry, and
+                    # hammering it is what extended the block in the first place.
+                    time.sleep(retry_wait * (2 ** attempt))
         cur, factor = normalise_currency_code(info.get("currency"))
         source = "lookup"
         if cur is None:
-            cur, factor, source = infer_currency(ident), 1.0, "inferred"
+            cur, factor = infer_currency(ident), 1.0
+            source = "failed" if failed else "inferred"
         return {
             "currency": cur,
             "unit_factor": factor,
@@ -305,19 +345,31 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
         }
 
     ids = list(identifiers)
-    rows = {}
+    rows, todo = {}, ids
+    if existing is not None and len(existing):
+        keep = existing.reindex([i for i in ids if i in existing.index])
+        if "source" in keep.columns:
+            keep = keep[keep["source"].isin(RESOLVED_SOURCES)]
+            rows = {i: keep.loc[i].to_dict() for i in keep.index}
+            todo = [i for i in ids if i not in rows]
+            if verbose:
+                print(f"  reusing {len(rows)} resolved rows, fetching {len(todo)}",
+                      flush=True)
+
     if workers <= 1:
-        for i, ident in enumerate(ids):
+        for i, ident in enumerate(todo):
             rows[ident] = one(ident)
+            if pause and i + 1 < len(todo):
+                time.sleep(pause)
             if verbose and (i + 1) % 250 == 0:
-                print(f"  listing {i + 1}/{len(ids)}", flush=True)
+                print(f"  listing {i + 1}/{len(todo)}", flush=True)
     else:
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(one, ident): ident for ident in ids}
+            futures = {ex.submit(one, ident): ident for ident in todo}
             for i, fut in enumerate(as_completed(futures)):
                 rows[futures[fut]] = fut.result()
                 if verbose and (i + 1) % 250 == 0:
-                    print(f"  listing {i + 1}/{len(ids)}", flush=True)
+                    print(f"  listing {i + 1}/{len(todo)}", flush=True)
 
     # Threads finish out of order; callers zip this against price columns.
     return pd.DataFrame.from_dict(rows, orient="index").reindex(ids)

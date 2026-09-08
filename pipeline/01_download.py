@@ -24,6 +24,7 @@ Every price/volume/returns artifact is written on the same name set: stocks whos
 currency cannot be resolved are dropped from all of them together.
 """
 
+import argparse
 import os
 import sys
 import time
@@ -41,7 +42,30 @@ from data_intake import (load_tickers, download_all, activity_filter, activity_h
                          resolve_listings, fetch_fx_rates, convert_panel)
 
 
-def main():
+def _load_checkpoint():
+    """The price/volume panels a previous run already fetched, or None."""
+    if not (os.path.exists(PATHS["01_prices"]) and os.path.exists(PATHS["01_volume"])):
+        return None
+    close = pd.read_csv(PATHS["01_prices"], index_col=0)
+    volume = pd.read_csv(PATHS["01_volume"], index_col=0)
+    return close, volume
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--resume", action="store_true",
+                    help="reuse the price panels and the listings already resolved "
+                         "on disk; re-fetch only what is missing or failed. Prices "
+                         "cost ~20 min and listings ~1.5s each, so a run interrupted "
+                         "by a rate limit is repaired rather than repeated.")
+    ap.add_argument("--listing-workers", type=int, default=None,
+                    help="override download_workers for the .info pass only. Use 1 "
+                         "when recovering from a rate limit -- concurrency is what "
+                         "triggers it.")
+    ap.add_argument("--listing-pause", type=float, default=0.0,
+                    help="seconds to wait between .info calls (single-worker only)")
+    args = ap.parse_args(argv)
+
     cfg = load_config()
     t0 = time.time()
     print("\n=== Step 1: Download (parallel batches) + activity filter ===")
@@ -49,11 +73,17 @@ def main():
     tickers = load_tickers(os.path.join(BASE_DIR, "stock_tickers", "*.csv"))
     print(f"Loaded {len(tickers)} unique tickers.")
 
-    close, volume = download_all(tickers, cfg)
-    print(f"Downloaded {close.shape[1]} valid tickers.")
-    if close.shape[1] < cfg["download_warn_fraction"] * len(tickers):
-        print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
-              f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
+    cached = _load_checkpoint() if args.resume else None
+    if cached is not None:
+        close, volume = cached
+        print(f"--resume: reusing {close.shape[1]} downloaded tickers from disk "
+              f"(no price download).")
+    else:
+        close, volume = download_all(tickers, cfg)
+        print(f"Downloaded {close.shape[1]} valid tickers.")
+        if close.shape[1] < cfg["download_warn_fraction"] * len(tickers):
+            print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
+                  f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
     detail = activity_filter(close, volume)
     health = activity_health(detail)
@@ -86,23 +116,37 @@ def main():
     # (CSPX.L is USD despite .L), KY/CN issuers listed in Hong Kong, and cents-quoted
     # Johannesburg lines. Errors run from 1.35x to 100x on exactly the magnitude the
     # universe screen ranks by.
-    workers = cfg["download_workers"]
+    workers = args.listing_workers or cfg["download_workers"]
+    existing = None
+    if args.resume and os.path.exists(PATHS["01_currency"]):
+        existing = pd.read_csv(PATHS["01_currency"], index_col=0)
+    per_call = 0.9 / workers + args.listing_pause
     print(f"Resolving listings for {len(kept)} stocks across {workers} workers "
-          f"(~{len(kept) * 0.9 / 60 / workers:.0f} min, cached to 01_currency.csv)...")
-    cur_df = resolve_listings(list(close_kept.columns), verbose=True, workers=workers)
+          f"(~{len(kept) * per_call / 60:.0f} min, cached to 01_currency.csv)...")
+    cur_df = resolve_listings(list(close_kept.columns), verbose=True, workers=workers,
+                              existing=existing, pause=args.listing_pause)
     cur_df.to_csv(PATHS["01_currency"])
 
     unknown = sorted(cur_df.index[cur_df["currency"].isna()])
     if unknown:
         print(f"  WARNING: unresolved quote currency, excluded from the universe "
               f"screen: {len(unknown)} -> {unknown[:15]}")
-    n_inferred = int((cur_df["source"] == "inferred").sum())
+    counts = cur_df["source"].value_counts().to_dict()
     n_minor = int((cur_df["unit_factor"] != 1.0).sum())
     n_renamed = int((cur_df["symbol"] != cur_df.index).sum())
-    print(f"  {len(cur_df) - n_inferred} by lookup, {n_inferred} by inference "
-          f"fallback, {n_minor} quoted in minor units (pence/cents)")
+    print(f"  {counts.get('lookup', 0)} by lookup, {counts.get('inferred', 0)} by "
+          f"inference, {counts.get('failed', 0)} FAILED (heuristic currency), "
+          f"{n_minor} quoted in minor units (pence/cents)")
     print(f"  {n_renamed} identifiers resolved to a different trading symbol "
           f"(ISIN -> ticker)")
+    if counts.get("failed"):
+        # Heuristic currencies are wrong ~12.5% of the time, and the errors run 1.35x
+        # to 100x on the very magnitude the universe screen ranks by. A screen built
+        # on this many of them is not trustworthy.
+        print(f"  WARNING: {counts['failed']} lookups failed (rate limit?). Their "
+              f"currencies are guessed from the ISIN prefix, which is ~87.5% accurate "
+              f"and mis-scales minor-unit quotes 100x. Re-run with "
+              f"'--resume --listing-workers 1 --listing-pause 1.5' to repair them.")
 
     currencies = sorted(cur_df["currency"].dropna().unique())
     fx = fetch_fx_rates(currencies, close_kept.index, hub="USD")

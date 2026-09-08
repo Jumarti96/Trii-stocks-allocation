@@ -277,9 +277,13 @@ def test_resolve_listings_survives_a_failing_lookup():
         if s == "BAD":
             raise RuntimeError("boom")
         return {"currency": "USD"}
-    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2)
+    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2,
+                              retries=1, retry_wait=0.0)
     assert got.loc["GOOD", "currency"] == "USD"
-    assert got.loc["BAD", "source"] == "inferred"       # fell back, did not crash
+    # Fell back and did not crash -- but recorded as 'failed', not 'inferred', so a
+    # resume knows to retry it rather than trusting the heuristic forever.
+    assert got.loc["BAD", "source"] == "failed"
+    assert got.loc["BAD", "currency"] is not None       # still usable meanwhile
 
 
 def test_resolve_listings_captures_symbol_and_name():
@@ -632,3 +636,101 @@ def test_select_universe_gates_read_the_frame_tail_not_as_of():
     honest = di.select_universe(close.iloc[:3], volume.iloc[:3], topn=1, window=3,
                                 price_floor=50.0, as_of="p2")
     assert honest == ["CHEAP"]
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit resilience
+#
+# A 2,930-name catalogue tripped Yahoo's rate limiter partway through, and because a
+# raised exception fell back to inference exactly like a genuine absence, the run
+# reported success while 54% of the catalogue carried heuristic currencies. The
+# damage landed where it hurts: NL0015000RT3 is NRP.JO, quoted in Johannesburg cents,
+# but the NL prefix inferred EUR -- wrong currency AND a missing 100x minor-unit
+# factor, which floated it to rank 2 of the liquidity screen.
+# ---------------------------------------------------------------------------
+
+class _Flaky:
+    """Fails the first `n_failures` calls per identifier, then succeeds."""
+
+    def __init__(self, n_failures, info=None):
+        self.n_failures = n_failures
+        self.calls = {}
+        self.info = info or {"currency": "USD", "symbol": "OK"}
+
+    def __call__(self, ident):
+        self.calls[ident] = self.calls.get(ident, 0) + 1
+        if self.calls[ident] <= self.n_failures:
+            raise RuntimeError("Too Many Requests. Rate limited.")
+        return self.info
+
+
+def test_resolve_listings_retries_a_failing_lookup():
+    fetch = _Flaky(n_failures=2)
+    got = di.resolve_listings(["A"], fetch_fn=fetch, retries=3, retry_wait=0.0)
+    assert got.loc["A", "source"] == "lookup"
+    assert got.loc["A", "currency"] == "USD"
+    assert fetch.calls["A"] == 3
+
+
+def test_resolve_listings_marks_an_exhausted_lookup_as_failed_not_inferred():
+    # THE bug: an exception and a genuinely currency-less response both became
+    # 'inferred', so a rate-limited run was indistinguishable from a complete one.
+    # 'failed' is what makes a resume know which rows to retry.
+    got = di.resolve_listings(["ZAE000351946"], fetch_fn=_Flaky(n_failures=99),
+                              retries=2, retry_wait=0.0)
+    assert got.loc["ZAE000351946", "source"] == "failed"
+
+
+def test_resolve_listings_still_infers_when_the_lookup_genuinely_lacks_a_currency():
+    # A successful response with no currency field is not a failure -- inference is
+    # the right answer, and it must stay distinguishable from a dropped call.
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: {"symbol": "ECO"},
+                              retries=2, retry_wait=0.0)
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+
+
+def test_resolve_listings_reuses_already_resolved_rows():
+    # Resuming must not re-spend a network call on a name already resolved: that is
+    # the whole point, at ~1.5s per call across thousands of names.
+    existing = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["AAPL"],
+         "name": ["Apple"], "source": ["lookup"], "sector": ["Technology"],
+         "industry": ["Consumer Electronics"], "market_cap": [4.6e12],
+         "exchange": ["NMS"], "quote_type": ["EQUITY"]},
+        index=["US0378331005"])
+    fetch = _Flaky(n_failures=0, info={"currency": "JPY", "symbol": "7269.T"})
+    got = di.resolve_listings(["US0378331005", "JP3397200001"], fetch_fn=fetch,
+                              existing=existing, retries=1, retry_wait=0.0)
+    assert "US0378331005" not in fetch.calls          # not re-fetched
+    assert got.loc["US0378331005", "symbol"] == "AAPL"
+    assert got.loc["JP3397200001", "symbol"] == "7269.T"
+
+
+def test_resolve_listings_retries_rows_that_previously_failed():
+    # A resume must re-attempt exactly the rows the rate limiter ate.
+    existing = pd.DataFrame(
+        {"currency": ["EUR"], "unit_factor": [1.0], "symbol": ["NL0015000RT3"],
+         "name": [None], "source": ["failed"], "sector": [None], "industry": [None],
+         "market_cap": [None], "exchange": [None], "quote_type": [None]},
+        index=["NL0015000RT3"])
+    fetch = _Flaky(n_failures=0, info={"currency": "ZAc", "symbol": "NRP.JO"})
+    got = di.resolve_listings(["NL0015000RT3"], fetch_fn=fetch, existing=existing,
+                              retries=1, retry_wait=0.0)
+    assert fetch.calls["NL0015000RT3"] == 1
+    assert got.loc["NL0015000RT3", "currency"] == "ZAR"     # normalised from ZAc
+    assert got.loc["NL0015000RT3", "unit_factor"] == pytest.approx(0.01)
+
+
+def test_resolve_listings_retries_previously_inferred_rows_too():
+    # Inference is a fallback, not an answer. If a later pass can reach the network,
+    # an authoritative lookup should replace the heuristic.
+    existing = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["KYG875721634"],
+         "name": [None], "source": ["inferred"], "sector": [None], "industry": [None],
+         "market_cap": [None], "exchange": [None], "quote_type": [None]},
+        index=["KYG875721634"])
+    fetch = _Flaky(n_failures=0, info={"currency": "HKD", "symbol": "0700.HK"})
+    got = di.resolve_listings(["KYG875721634"], fetch_fn=fetch, existing=existing,
+                              retries=1, retry_wait=0.0)
+    assert got.loc["KYG875721634", "currency"] == "HKD"
+    assert got.loc["KYG875721634", "source"] == "lookup"
