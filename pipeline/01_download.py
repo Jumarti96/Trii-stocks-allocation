@@ -39,7 +39,8 @@ import pandas as pd
 
 from config import load_config, PATHS, BASE_DIR
 from data_intake import (load_tickers, download_all, activity_filter, activity_health,
-                         resolve_listings, fetch_fx_rates, convert_panel)
+                         resolve_listings, fetch_fx_rates, convert_panel,
+                         sanitise_fx, drop_bad_prices, drop_implausible_names)
 
 
 def _load_checkpoint():
@@ -152,6 +153,20 @@ def main(argv=None):
     fx = fetch_fx_rates(currencies, close_kept.index, hub="USD")
     print(f"Currencies: {len(currencies)} -> {currencies}")
 
+    # Bad ticks, repaired before they reach the returns. Both defects below were
+    # measured on this catalogue and both are fatal rather than cosmetic: one bad FX
+    # print corrupts every stock in that currency, and one zero price yields an
+    # infinity that stops LedoitWolf hours into a backtest.
+    fx, n_fx_fixed = sanitise_fx(fx)
+    if n_fx_fixed:
+        print(f"  Repaired {n_fx_fixed} implausible single-period FX tick(s) "
+              f"(spike that immediately reverses; e.g. USDIDR=X printed 0.75 for one "
+              f"week against a true ~7.5e-5).")
+    close_kept, n_px_fixed = drop_bad_prices(close_kept)
+    if n_px_fixed:
+        print(f"  Repaired {n_px_fixed} non-positive price(s) by carrying the last "
+              f"good value forward.")
+
     # Returns are computed on USD-converted prices, NOT on native ones. A flat
     # COP-quoted stock held through a 20% peso depreciation lost 20% in the hands of
     # anyone whose wealth is not measured in pesos, and pct_change() on the native
@@ -170,12 +185,21 @@ def main(argv=None):
         print(f"  Dropped {len(unconverted)} stocks with no usable FX rate "
               f"(unknown_currency={cfg['unknown_currency']}): {unconverted[:15]}")
 
+    rets_all = prices_usd.pct_change().iloc[1:]
+    rets_all, implausible = drop_implausible_names(rets_all)
+    if implausible:
+        syms = [str(cur_df.loc[t, "symbol"]) for t in implausible[:10]]
+        print(f"  Dropped {len(implausible)} stock(s) whose returns contain an "
+              f"impossible move (>400% in one period) -- a quote-unit switch inside "
+              f"the source series, which no single unit_factor can correct: {syms}")
+
     # Every artifact is written on the SAME name set, so downstream steps that zip
     # prices against returns against volume cannot silently misalign.
-    final = list(prices_usd.columns)
+    final = [c for c in prices_usd.columns if c in set(rets_all.columns)]
     close_kept = close_kept[final]
     volume_kept = volume_kept[final]
-    rets = prices_usd.pct_change().iloc[1:]
+    prices_usd = prices_usd[final]
+    rets = rets_all[final]
 
     close_kept.to_csv(PATHS["01_prices"])          # rewritten on the final name set
     volume_kept.to_csv(PATHS["01_volume"])

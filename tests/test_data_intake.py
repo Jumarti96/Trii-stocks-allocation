@@ -734,3 +734,92 @@ def test_resolve_listings_retries_previously_inferred_rows_too():
                               retries=1, retry_wait=0.0)
     assert got.loc["KYG875721634", "currency"] == "HKD"
     assert got.loc["KYG875721634", "source"] == "lookup"
+
+
+# ---------------------------------------------------------------------------
+# Bad-tick defences
+#
+# Real defects found on the 2,923-name global catalogue. Each one silently produced
+# returns that crashed or would have poisoned the covariance matrix:
+#   - USDIDR=X carried a single tick of 0.75 against a true ~7.5e-5, exactly 10,000x
+#     high, which gave every Indonesian stock a +1,074,200% week and then -100%.
+#   - GB00B9XQT119 had one Close of 0.0 between two prices near 141, so pct_change
+#     returned -1.0 and then +inf, and LedoitWolf refused to fit.
+# ---------------------------------------------------------------------------
+
+def test_sanitise_fx_repairs_an_order_of_magnitude_spike():
+    idx = [f"p{i}" for i in range(6)]
+    fx = pd.DataFrame({"IDR": [7.5e-5, 7.5e-5, 0.75, 7.6e-5, 7.6e-5, 7.6e-5],
+                       "USD": [1.0] * 6}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 1
+    assert out["IDR"].iloc[2] == pytest.approx(7.5e-5, rel=0.1)
+    assert out["IDR"].max() < 1e-4
+    assert out["USD"].tolist() == [1.0] * 6          # untouched
+
+
+def test_sanitise_fx_leaves_a_real_devaluation_alone():
+    # The guard must not "repair" genuine FX moves. The largest real weekly move in
+    # the measured data was ZAR at 42%; a 60% crash is extreme but not a bad tick.
+    idx = [f"p{i}" for i in range(5)]
+    fx = pd.DataFrame({"ZAR": [0.10, 0.10, 0.04, 0.04, 0.04]}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 0
+    pd.testing.assert_frame_equal(out, fx)
+
+
+def test_sanitise_fx_leaves_a_sustained_trend_alone():
+    # A currency that halves gradually is a trend, not a tick, at every step.
+    idx = [f"p{i}" for i in range(6)]
+    fx = pd.DataFrame({"TRY": [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 0
+
+
+def test_drop_bad_prices_replaces_non_positive_with_the_last_good_price():
+    # A zero adjusted close is never legitimate; carried into pct_change it yields
+    # -1.0 and then +inf, and the infinity is what actually stops the run.
+    idx = [f"p{i}" for i in range(5)]
+    px = pd.DataFrame({"A": [141.0, 0.0, 142.0, 143.0, 144.0],
+                       "B": [10.0, 11.0, -3.0, 12.0, 13.0]}, index=idx)
+    out, n = di.drop_bad_prices(px)
+    assert n == 2
+    assert out["A"].iloc[1] == pytest.approx(141.0)      # forward-filled
+    assert out["B"].iloc[2] == pytest.approx(11.0)
+    assert np.isfinite(out.pct_change().iloc[1:].values).all()
+
+
+def test_drop_bad_prices_backfills_a_leading_bad_value():
+    px = pd.DataFrame({"A": [0.0, 10.0, 11.0]}, index=["p0", "p1", "p2"])
+    out, n = di.drop_bad_prices(px)
+    assert out["A"].iloc[0] == pytest.approx(10.0)       # nothing earlier to carry
+    assert np.isfinite(out.pct_change().iloc[1:].values).all()
+
+
+def test_drop_implausible_names_removes_a_hundredfold_jump():
+    # Yahoo switches quote units mid-history on some lines: III.L, MEGP.L, OTV2.L,
+    # SLM.JO and PPH.JO all jump by almost exactly 100x partway through, a GBp/GBP
+    # or ZAc/ZAR flip in the source series rather than a market event. unit_factor is
+    # one value per name and cannot express a switch, so the name has to go.
+    rets = pd.DataFrame({
+        "GOOD": [0.01, -0.02, 0.03, 0.01],
+        "FLIPPED": [0.01, 99.0, -0.99, 0.01],
+    })
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert list(kept.columns) == ["GOOD"]
+    assert dropped == ["FLIPPED"]
+
+
+def test_drop_implausible_names_keeps_a_violent_but_real_move():
+    # A biotech can triple on trial results. The threshold has to sit above real
+    # extremes or the screen quietly deletes the most interesting names.
+    rets = pd.DataFrame({"BIOTECH": [0.02, 2.5, -0.4, 0.01]})
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert dropped == []
+    assert list(kept.columns) == ["BIOTECH"]
+
+
+def test_drop_implausible_names_catches_a_collapse_as_well_as_a_spike():
+    rets = pd.DataFrame({"CRASH": [0.01, -0.995, 120.0, 0.0]})
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert dropped == ["CRASH"]

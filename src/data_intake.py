@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore")
 
+import numpy as np
 import pandas as pd
 
 
@@ -435,6 +436,90 @@ def fetch_fx_rates(currencies, index, hub="USD", fetch_fn=None):
             f"'<cur>{hub}=X' and '{hub}<cur>=X'. Refusing to continue -- an "
             f"unconverted currency would be ranked by its raw magnitude.")
     return pd.DataFrame(out, index=index)
+
+
+def sanitise_fx(fx, max_move=2.0):
+    """Repair single-period FX spikes that reverse immediately. Returns (fx, n_fixed).
+
+    Provider FX series carry occasional bad ticks, and one of them corrupts every
+    stock in that currency. Measured here: USDIDR=X reported 0.75 for the week of
+    2017-05-07 against a true rate near 7.5e-5 -- exactly 10,000x out, a decimal
+    slip -- which handed all six Indonesian names a +1,074,200% week followed by
+    -100%. Those returns then propagate into the covariance matrix.
+
+    A bad tick is identified as a move larger than `max_move` (as a ratio, so 2.0
+    means tripling or worse) that REVERSES at the next period. Both halves are
+    required: real currencies do crash, but they do not crash and fully recover in a
+    week. The largest genuine weekly move in the measured 10-year panel was ZAR at
+    42%, so the default sits far above anything real while still catching a 10,000x
+    slip. Offending points are replaced by interpolation between their neighbours.
+
+    A sustained devaluation is left alone at every step, since no step reverses.
+    """
+    out = fx.copy()
+    n_fixed = 0
+    for col in out.columns:
+        s = out[col].astype(float)
+        ratio = s / s.shift(1)
+        for i in range(1, len(s) - 1):
+            up, back = ratio.iloc[i], ratio.iloc[i + 1]
+            if not (np.isfinite(up) and np.isfinite(back)):
+                continue
+            spiked = up > (1 + max_move) or up < 1 / (1 + max_move)
+            reverted = (up > 1) != (back > 1) and abs(np.log(up * back)) < abs(np.log(up)) / 2
+            if spiked and reverted:
+                s.iloc[i] = (s.iloc[i - 1] + s.iloc[i + 1]) / 2.0
+                ratio = s / s.shift(1)
+                n_fixed += 1
+        out[col] = s
+    return out, n_fixed
+
+
+def drop_bad_prices(close):
+    """Replace non-positive prices with the last good one. Returns (close, n_fixed).
+
+    An adjusted close of 0 or below is never legitimate -- it is a hole in the feed.
+    Carried into pct_change it produces -1.0 and then +inf, and the infinity is what
+    actually halts a run: LedoitWolf refuses to fit a matrix containing one, several
+    hours into a backtest. Measured: one such tick on the 2,923-name catalogue
+    (GB00B9XQT119, a single 0.0 between two prices near 141).
+
+    Forward-fill rather than drop the name: one bad print is not a reason to discard
+    ten years of history. A leading bad value is back-filled, since there is nothing
+    earlier to carry forward.
+    """
+    bad = close <= 0
+    n_fixed = int(bad.values.sum())
+    if not n_fixed:
+        return close, 0
+    return close.mask(bad).ffill().bfill(), n_fixed
+
+
+def drop_implausible_names(rets, max_return=5.0):
+    """Remove stocks whose return series contains an impossible move. (rets, dropped).
+
+    Unlike sanitise_fx and drop_bad_prices, this does not repair -- it excludes. The
+    defect it catches is a quote-unit switch inside the provider's own price series:
+    III.L, MEGP.L, OTV2.L, SLM.JO and PPH.JO each jump by almost exactly 100x
+    partway through their history, a GBp/GBP or ZAc/ZAR flip. unit_factor is a
+    single value per name and cannot express a switch that happens mid-series, so
+    there is nothing to correct with; the honest move is to drop the name and say so.
+
+    Excluding matters even when such a name looks harmless. A 100x price jump also
+    inflates Close * Volume by 100x for the rest of the history, which is what
+    select_universe ranks by -- so a corrupted line is actively pushed TOWARD the
+    modelled universe, and once inside it dominates both the covariance matrix and
+    any cross-sectional ranking the model learns.
+
+    max_return defaults to 5.0 (+400% in one period), far above real extremes: a
+    biotech can triple on trial results, but it does not gain 10,000%. Measured on
+    the 2,923-name catalogue: 26 names exceed it, 0.9% of the universe.
+    """
+    worst = rets.abs().max()
+    dropped = sorted(worst.index[worst > max_return])
+    if not dropped:
+        return rets, []
+    return rets.drop(columns=dropped), dropped
 
 
 UNKNOWN_CURRENCY_POLICIES = ("exclude", "assume_target")

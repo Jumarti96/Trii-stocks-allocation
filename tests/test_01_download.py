@@ -32,23 +32,25 @@ def _stub_step1(mod, tmp_path, monkeypatch, cfg_overrides=None):
     """Wire the script to fixtures: 3 stocks, one per currency situation."""
     # NVDA (USD), ECO.CL (COP, flat native price while the peso halves), MYSTERY
     # (currency unresolvable).
+    # FLIP switches quote unit 100x partway through, as III.L and SLM.JO do.
     close = pd.DataFrame({"NVDA": [100.0] * 12,
                           "ECO.CL": [4000.0] * 12,
-                          "MYSTERY": [50.0] * 12}, index=IDX)
+                          "MYSTERY": [50.0] * 12,
+                          "FLIP": [2.0] * 6 + [200.0] * 6}, index=IDX)
     volume = pd.DataFrame({c: [1_000.0] * 12 for c in close.columns}, index=IDX)
 
     listings = pd.DataFrame(
-        {"currency": ["USD", "COP", None],
-         "unit_factor": [1.0, 1.0, 1.0],
-         "symbol": ["NVDA", "ECO.CL", "MYSTERY"],
-         "name": ["NVIDIA", "Ecopetrol", ""],
-         "source": ["lookup", "lookup", "inferred"],
-         "sector": ["Technology", "Energy", None],
-         "industry": ["Semiconductors", "Oil & Gas", None],
-         "market_cap": [4.2e12, 5.0e10, None],
-         "exchange": ["NMS", "BVC", None],
-         "quote_type": ["EQUITY", "EQUITY", None]},
-        index=["NVDA", "ECO.CL", "MYSTERY"])
+        {"currency": ["USD", "COP", None, "USD"],
+         "unit_factor": [1.0, 1.0, 1.0, 1.0],
+         "symbol": ["NVDA", "ECO.CL", "MYSTERY", "FLIP"],
+         "name": ["NVIDIA", "Ecopetrol", "", "Flipper"],
+         "source": ["lookup", "lookup", "inferred", "lookup"],
+         "sector": ["Technology", "Energy", None, None],
+         "industry": ["Semiconductors", "Oil & Gas", None, None],
+         "market_cap": [4.2e12, 5.0e10, None, None],
+         "exchange": ["NMS", "BVC", None, None],
+         "quote_type": ["EQUITY", "EQUITY", None, None]},
+        index=["NVDA", "ECO.CL", "MYSTERY", "FLIP"])
 
     # The peso halves against the dollar over the window.
     cop = [0.00025] * 6 + [0.000125] * 6
@@ -179,3 +181,18 @@ def test_resume_reuses_prices_and_only_refetches_unresolved_listings(tmp_path, m
     cur = _read(paths, "01_currency")
     assert cur.loc["NVDA", "sector"] == "Technology"     # reused verbatim
     assert cur.loc["ECO.CL", "source"] == "lookup"       # repaired
+
+
+def test_a_quote_unit_switch_is_dropped_from_every_artifact(tmp_path, monkeypatch):
+    # A 100x jump is not just a bad return: it inflates Close * Volume 100x too, so
+    # select_universe actively ranks the corrupted line HIGHER and pulls it into the
+    # modelled universe, where it dominates the covariance matrix.
+    mod = _load_script()
+    paths = _stub_step1(mod, tmp_path, monkeypatch)
+    mod.main([])
+
+    for key in ("01_prices", "01_returns", "01_volume"):
+        assert "FLIP" not in _read(paths, key).columns, key
+    assert "FLIP" not in pd.read_csv(tmp_path / "01_prices_usd.csv", index_col=0).columns
+    assert "FLIP" not in pd.read_csv(tmp_path / "01_liquidity.csv", index_col=0).index
+    assert "NVDA" in _read(paths, "01_returns").columns      # the sane name survives
