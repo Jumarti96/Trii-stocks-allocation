@@ -25,6 +25,10 @@ results/*
 
 data/*
 !data/.gitkeep
+# Snapshots taken before re-running step 1 (data_trii80_backup, data_global10y_backup,
+# data_global20y_backup...). Same reasoning as data/ itself: reproducible from a
+# download, hundreds of MB, and not source.
+data_*_backup/
 
 docs/superpowers/
 .worktrees/
