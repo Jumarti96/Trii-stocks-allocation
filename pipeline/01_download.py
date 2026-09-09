@@ -169,9 +169,20 @@ def main(argv=None):
               f"and mis-scales minor-unit quotes 100x. Re-run with "
               f"'--resume --listing-workers 1 --listing-pause 1.5' to repair them.")
 
-    currencies = sorted(cur_df["currency"].dropna().unique())
+    # report_currency is included whether or not anything is quoted in it. Step 4
+    # converts every price into it, so it needs that rate unconditionally -- and
+    # building this list from listing currencies alone only ever worked by accident,
+    # because the Trii universe happened to hold COP-quoted names. The ISIN catalogue
+    # has no Colombian stocks, so the pipeline ran to completion and then died in
+    # step 4 with KeyError: 'COP'.
+    listed = set(cur_df["currency"].dropna().unique())
+    currencies = sorted(listed | {cfg["report_currency"]})
+    extra = sorted(c for c in currencies if c not in listed)
     fx = fetch_fx_rates(currencies, close_kept.index, hub="USD")
     print(f"Currencies: {len(currencies)} -> {currencies}")
+    if extra:
+        print(f"  (+{len(extra)} not held by any stock, fetched for report_currency: "
+              f"{extra})")
 
     # Bad ticks, repaired before they reach the returns. Both defects below were
     # measured on this catalogue and both are fatal rather than cosmetic: one bad FX

@@ -874,3 +874,19 @@ def test_select_universe_market_cap_gate_keeps_nan():
     assert "BIG" in kept
     assert "ETF" in kept            # NaN survives the gate
     assert "SMALL" not in kept      # below the floor despite the highest volume
+
+
+def test_convert_currency_names_a_missing_target_currency():
+    # A bare "KeyError: 'COP'" out of pandas, 25 minutes into a pipeline run, does not
+    # tell you that 01_fx.csv lacks your report_currency or what to do about it.
+    fx = pd.DataFrame({"USD": [1.0], "EUR": [1.1]}, index=["p1"])
+    with pytest.raises(ValueError, match="COP"):
+        di.convert_currency(pd.Series({"NVDA": 100.0}), {"NVDA": "USD"}, fx,
+                            target="COP")
+
+
+def test_convert_panel_names_a_missing_target_currency():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    prices = pd.DataFrame({"A": [10.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="COP"):
+        di.convert_panel(prices, {"A": "USD"}, fx, target="COP")

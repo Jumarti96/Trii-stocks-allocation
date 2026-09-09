@@ -563,6 +563,13 @@ def convert_currency(amounts, cur_map, fx, target=None, when=-1, unit_factors=No
             f"got {unknown!r}")
 
     rates = fx.iloc[when]
+    if target is not None and target not in rates.index:
+        raise ValueError(
+            f"no FX rate for target currency {target!r}. 01_fx.csv covers "
+            f"{sorted(rates.index)}. If {target!r} is your report_currency, re-run "
+            f"pipeline/01_download.py --resume: step 1 now always fetches it, even "
+            f"when no holding is quoted in it.")
+
     denom = 1.0 if target is None else float(rates[target])
 
     scale = {}
@@ -613,6 +620,11 @@ def convert_panel(prices, cur_map, fx, target=None, unit_factors=None,
             f"price those rows at another period's rate.")
 
     rates = fx.loc[prices.index]
+    if target is not None and target not in rates.columns:
+        raise ValueError(
+            f"no FX rate for target currency {target!r}. 01_fx.csv covers "
+            f"{sorted(rates.columns)}. If {target!r} is your report_currency, re-run "
+            f"pipeline/01_download.py --resume.")
     denom = 1.0 if target is None else rates[target]
 
     scales, dropped = {}, []

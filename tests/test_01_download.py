@@ -287,3 +287,73 @@ def test_step1_honours_the_liquidity_config(tmp_path, monkeypatch):
     mod.main([])
     kept = set(pd.read_csv(paths["01_prices"], index_col=0).columns)
     assert kept == {"FULL", "HALF"}
+
+
+def test_report_currency_is_always_in_the_fx_table(tmp_path, monkeypatch):
+    # Step 4 converts prices into report_currency, so it needs that rate whether or
+    # not any holding is quoted in it. Building the FX table from listing currencies
+    # alone worked only by accident on the Trii universe, which held COP-quoted names;
+    # the ISIN catalogue has zero Colombian stocks, so the whole pipeline ran for
+    # ~25 minutes and then died in step 4 with KeyError: 'COP'.
+    mod = _load_script()
+    requested = {}
+
+    close = pd.DataFrame({"NVDA": [100.0] * 12}, index=IDX)
+    volume = pd.DataFrame({"NVDA": [1000.0] * 12}, index=IDX)
+    listings = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["NVDA"],
+         "name": ["NVIDIA"], "source": ["lookup"], "sector": [None],
+         "industry": [None], "market_cap": [None], "exchange": [None],
+         "quote_type": [None]}, index=["NVDA"])
+
+    def fake_fx(currencies, index, hub="USD"):
+        requested["currencies"] = list(currencies)
+        return pd.DataFrame({c: [1.0] * 12 for c in currencies}, index=index)
+
+    cfg = mod.load_config()
+    cfg.update(unknown_currency="exclude", report_currency="COP")
+    paths = {k: str(tmp_path / f"{k}.csv") for k in
+             ("01_prices", "01_returns", "01_volume", "01_currency", "01_fx")}
+    monkeypatch.setattr(mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(mod, "PATHS", paths)
+    monkeypatch.setattr(mod, "load_tickers", lambda g: ["NVDA"])
+    monkeypatch.setattr(mod, "download_all", lambda t, c: (close, volume))
+    monkeypatch.setattr(mod, "resolve_listings", lambda ids, **kw: listings.reindex(ids))
+    monkeypatch.setattr(mod, "fetch_fx_rates", fake_fx)
+
+    mod.main([])
+
+    assert "COP" in requested["currencies"]      # no COP-quoted holding, still fetched
+    assert "COP" in pd.read_csv(paths["01_fx"], index_col=0).columns
+
+
+def test_report_currency_is_not_requested_twice(tmp_path, monkeypatch):
+    # USD is both the hub and a listing currency here; it must appear once.
+    mod = _load_script()
+    requested = {}
+
+    close = pd.DataFrame({"NVDA": [100.0] * 12}, index=IDX)
+    volume = pd.DataFrame({"NVDA": [1000.0] * 12}, index=IDX)
+    listings = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["NVDA"],
+         "name": ["NVIDIA"], "source": ["lookup"], "sector": [None],
+         "industry": [None], "market_cap": [None], "exchange": [None],
+         "quote_type": [None]}, index=["NVDA"])
+
+    def fake_fx(currencies, index, hub="USD"):
+        requested["currencies"] = list(currencies)
+        return pd.DataFrame({c: [1.0] * 12 for c in currencies}, index=index)
+
+    cfg = mod.load_config()
+    cfg.update(unknown_currency="exclude", report_currency="USD")
+    paths = {k: str(tmp_path / f"{k}.csv") for k in
+             ("01_prices", "01_returns", "01_volume", "01_currency", "01_fx")}
+    monkeypatch.setattr(mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(mod, "PATHS", paths)
+    monkeypatch.setattr(mod, "load_tickers", lambda g: ["NVDA"])
+    monkeypatch.setattr(mod, "download_all", lambda t, c: (close, volume))
+    monkeypatch.setattr(mod, "resolve_listings", lambda ids, **kw: listings.reindex(ids))
+    monkeypatch.setattr(mod, "fetch_fx_rates", fake_fx)
+
+    mod.main([])
+    assert requested["currencies"].count("USD") == 1
