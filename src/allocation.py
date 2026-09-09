@@ -18,6 +18,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 import risk_kit as rk
+# The capping rule used to be duplicated byte-for-byte here and in backtesting.py, so
+# the rule deciding whether a book respects max_weight had two homes and nothing
+# testing that they agreed. It now lives in strategies.py, shared by both.
+from strategies import cap_weights
 
 
 def msr_eliminate(returns, covmat, cfg):
@@ -57,27 +61,6 @@ def msr_eliminate(returns, covmat, cfg):
     weights = pd.Series(0.0, index=names)
     weights[optimal.index] = optimal["Weights"]
     return weights
-
-
-def _cap_weights(weights, max_weight, tol=1e-12, max_passes=100):
-    """Clip to max_weight and redistribute the freed weight, until nothing exceeds it.
-
-    Iterative because capping one name pushes its excess onto the others, which can
-    carry a second name over the cap. Each pass strictly reduces the excess, so this
-    converges; max_passes is a backstop, not a tuning knob.
-    """
-    w = weights.copy()
-    for _ in range(max_passes):
-        over = w > max_weight + tol
-        if not over.any():
-            return w
-        w[over] = max_weight
-        deficit = 1.0 - w.sum()
-        room = ~over
-        if deficit <= tol or not room.any() or w[room].sum() <= tol:
-            return w
-        w[room] += deficit * w[room] / w[room].sum()
-    return w
 
 
 def apply_consensus_floor(weights, min_weight, max_weight=1.0):
@@ -120,7 +103,7 @@ def apply_consensus_floor(weights, min_weight, max_weight=1.0):
         w = (survivors / survivors.sum()).sort_values()
 
     if max_weight < 1.0:
-        w = _cap_weights(w, max_weight)
+        w = cap_weights(w, max_weight)
 
     out = pd.Series(0.0, index=names)
     out[w.index] = w

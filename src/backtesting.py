@@ -22,9 +22,23 @@ cancels the common move; measured on this universe that cut the standard
 deviation of the comparison from 0.159 to 0.049, a ~10x variance reduction.
 """
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+# Re-exported so this module's public surface is unchanged: callers and tests keep
+# importing the strategies from `backtesting`. They live in strategies.py because
+# src/allocation.py now exposes the same rules as live allocation methods, and a
+# strategy defined in two places drifts.
+from strategies import (                                          # noqa: F401
+    cap_weights, equal_weight_all, equal_weight_topn, gmv_weights,
+    inverse_vol_weights, momentum_weights, random_weights,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,80 +66,11 @@ def rebalance_schedule(n_periods, cadence, horizon, min_train):
 
 
 # ---------------------------------------------------------------------------
-# Benchmark strategies
+# Luck control
 #
-# Each returns a weight Series summing to 1. None of them train a model; that is
-# the point -- they are what you would get without one.
+# The strategies themselves live in strategies.py and are re-exported above; what
+# stays here is the scoring of a result against a distribution of random books.
 # ---------------------------------------------------------------------------
-
-def equal_weight_all(names):
-    """1/n across the whole universe. The do-nothing baseline."""
-    names = list(names)
-    return pd.Series(1.0 / len(names), index=names)
-
-
-def equal_weight_topn(scores, n):
-    """Equal weights across the n highest-scoring names.
-
-    Paired against the model this separates selection skill from weighting skill:
-    same picks, naive weights.
-    """
-    top = scores.nlargest(n).index
-    return pd.Series(1.0 / len(top), index=top).reindex(scores.index).fillna(0.0)
-
-
-def gmv_weights(covmat, max_weight=1.0):
-    """Global minimum-variance weights: w proportional to Sigma^-1 * 1, normalised.
-
-    Uses NO expected returns. If this matches the model, the forecast adds nothing
-    and all the value is in the covariance estimate.
-
-    Long-only is enforced by clipping negatives and renormalising, which keeps the
-    benchmark comparable to the long-only model rather than letting it short.
-    """
-    names = list(covmat.index)
-    ones = np.ones(len(names))
-    try:
-        raw = np.linalg.solve(covmat.values, ones)
-    except np.linalg.LinAlgError:
-        raw = np.linalg.pinv(covmat.values) @ ones
-    w = pd.Series(raw, index=names).clip(lower=0.0)
-    if w.sum() <= 0:                      # degenerate: fall back to equal weight
-        return equal_weight_all(names)
-    w = w / w.sum()
-    if max_weight < 1.0:
-        w = _cap(w, max_weight)
-    return w
-
-
-def inverse_vol_weights(covmat):
-    """Weights proportional to 1/sigma. Naive risk parity, ignores correlations."""
-    vol = pd.Series(np.sqrt(np.diag(covmat.values)), index=covmat.index)
-    inv = 1.0 / vol.clip(lower=1e-12)
-    return inv / inv.sum()
-
-
-def momentum_weights(hist_rets, n, lookback):
-    """Equal weights on the n best trailing compound returns over `lookback` periods.
-
-    The classic naive stock picker: no model, no covariance, just recent winners.
-    """
-    window = hist_rets.iloc[-lookback:]
-    score = (1 + window).prod() - 1
-    return equal_weight_topn(score, n)
-
-
-def random_weights(names, n, rng):
-    """Equal weights on n names chosen uniformly at random.
-
-    The luck control. A model that cannot beat a distribution of these has not
-    demonstrated stock-picking skill, whatever its absolute return looks like.
-    """
-    names = list(names)
-    picked = rng.choice(len(names), size=min(n, len(names)), replace=False)
-    idx = [names[i] for i in picked]
-    return pd.Series(1.0 / len(idx), index=idx).reindex(names).fillna(0.0)
-
 
 def random_percentile(value, draws):
     """Fraction of `draws` the model's value beats. 0.5 means indistinguishable."""
@@ -175,22 +120,6 @@ def paired_comparison(strategy, baseline):
 # ---------------------------------------------------------------------------
 # Portfolio mechanics
 # ---------------------------------------------------------------------------
-
-def _cap(weights, max_weight, tol=1e-12, max_passes=100):
-    """Clip to max_weight and redistribute, iterating until nothing exceeds it."""
-    w = weights.copy()
-    for _ in range(max_passes):
-        over = w > max_weight + tol
-        if not over.any():
-            return w
-        w[over] = max_weight
-        deficit = 1.0 - w.sum()
-        room = ~over
-        if deficit <= tol or not room.any() or w[room].sum() <= tol:
-            return w
-        w[room] += deficit * w[room] / w[room].sum()
-    return w
-
 
 def turnover(w_prev, w_new):
     """One-way turnover: 0.5 * sum |w_new - w_prev| over the union of holdings."""
