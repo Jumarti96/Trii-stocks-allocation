@@ -91,7 +91,17 @@ def main(argv=None):
             print(f"  WARNING: only {close.shape[1]}/{len(tickers)} tickers downloaded "
                   f"({len(tickers) - close.shape[1]} lost to batch failures / missing data).")
 
-    detail = activity_filter(close, volume)
+    # Both of these used to be dead config: activity_filter was called bare, so its
+    # signature defaults won and editing params.yaml changed nothing. The defaults
+    # happened to match the YAML values, which is what kept it invisible.
+    liq_fraction = cfg.get("liquidity_window_fraction", 0.10)
+    liq_window = max(10, int(len(close) * liq_fraction))
+    detail = activity_filter(close, volume, window=liq_window,
+                             min_active_fraction=cfg.get(
+                                 "liquidity_min_active_fraction", 0.85))
+    print(f"Activity window: last {liq_window} periods "
+          f"({liq_fraction:.0%} of {len(close)}), "
+          f"min active {cfg.get('liquidity_min_active_fraction', 0.85):.0%}")
     health = activity_health(detail)
     print(f"Activity filter: kept {health['n_kept']}/{health['n_total']} "
           f"(excluded {health['n_excluded']}; zero-volume {health['zero_volume_fraction']:.0%})")

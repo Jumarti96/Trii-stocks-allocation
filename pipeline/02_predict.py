@@ -43,7 +43,7 @@ import pandas as pd
 from sklearn.covariance import LedoitWolf
 
 from config import load_config, PATHS
-from data_intake import select_universe
+from data_intake import select_universe, convert_currency
 from transformer_model import (train_and_predict, weighted_mean_return, describe_device,
                                capacity_report)
 
@@ -77,14 +77,34 @@ def main():
         # unit_factor rescales pence/cents quotes; absent in pre-minor-unit caches.
         unit_factors = (cur_df['unit_factor'].to_dict()
                         if 'unit_factor' in cur_df.columns else None)
+        # Market cap comes free from step 1's .info pass. Until this was wired up,
+        # universe_min_market_cap was dead config -- it had no data source and was
+        # never passed here, so the gate could not fire whatever the YAML said.
+        # Caps are in the LISTING currency, so convert before comparing: yfinance
+        # reports Astra International at 196e12 (IDR ~196tn, about USD 12bn), which
+        # would clear any plausible USD floor untouched.
+        min_cap = cfg.get('universe_min_market_cap')
+        market_cap = None
+        if min_cap and 'market_cap' in cur_df.columns:
+            raw_cap = pd.to_numeric(cur_df['market_cap'], errors='coerce').dropna()
+            market_cap = convert_currency(raw_cap, cur_map, fx,
+                                          unit_factors=None,   # caps are major-unit
+                                          unknown=cfg['unknown_currency'])
+        elif min_cap:
+            raise ValueError(
+                "universe_min_market_cap is set but 01_currency.csv has no "
+                "market_cap column. Re-run pipeline/01_download.py --resume.")
+
         universe = select_universe(
             prices, volume, cfg['universe_topn'],
             strata=cfg.get('universe_strata'),
             price_floor=cfg.get('universe_price_floor', 0.0),
             fx=fx, cur_map=cur_map, unit_factors=unit_factors,
+            market_cap=market_cap, min_market_cap=min_cap,
         )
         print(f"Universe screen: {len(universe)} of {prices.shape[1]} stocks "
-              f"(topn={cfg['universe_topn']}, strata={cfg.get('universe_strata')})")
+              f"(topn={cfg['universe_topn']}, strata={cfg.get('universe_strata')}"
+              + (f", min_market_cap=${min_cap:,.0f}" if min_cap else "") + ")")
         prices = prices[universe]
         rets   = rets[universe]
 

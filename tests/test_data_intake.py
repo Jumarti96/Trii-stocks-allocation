@@ -857,3 +857,20 @@ def test_a_response_that_identifies_the_instrument_is_inferred_not_failed():
                               retries=1, retry_wait=0.0)
     assert got.loc["ECOPETROL.CL", "source"] == "inferred"
     assert got.loc["ECOPETROL.CL", "name"] == "Ecopetrol SA"
+
+
+def test_select_universe_market_cap_gate_keeps_nan():
+    # universe_min_market_cap was dead config until step 2 started passing market_cap.
+    # The gate must keep NaN rather than treating it as zero: yfinance reports no
+    # marketCap for ETFs, and zero-filling would silently delete every one of them.
+    idx = [f"p{i}" for i in range(6)]
+    close = pd.DataFrame({"BIG": [100.0] * 6, "SMALL": [100.0] * 6,
+                          "ETF": [100.0] * 6}, index=idx)
+    volume = pd.DataFrame({"BIG": [900.0] * 6, "SMALL": [1000.0] * 6,
+                           "ETF": [800.0] * 6}, index=idx)
+    caps = pd.Series({"BIG": 50e9, "SMALL": 1e8})          # ETF absent -> NaN
+    kept = di.select_universe(close, volume, topn=3, window=3,
+                              market_cap=caps, min_market_cap=1e9)
+    assert "BIG" in kept
+    assert "ETF" in kept            # NaN survives the gate
+    assert "SMALL" not in kept      # below the floor despite the highest volume

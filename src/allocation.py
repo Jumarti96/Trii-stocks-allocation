@@ -21,6 +21,7 @@ import risk_kit as rk
 # The capping rule used to be duplicated byte-for-byte here and in backtesting.py, so
 # the rule deciding whether a book respects max_weight had two homes and nothing
 # testing that they agreed. It now lives in strategies.py, shared by both.
+import strategies as strat
 from strategies import cap_weights
 
 
@@ -242,11 +243,7 @@ def equal_weight_topn_alloc(returns, covmat, cfg):
     select_top_n so selection matches the pipeline's pre-filter exactly.
     """
     min_w, max_w = cfg["min_weight"], cfg["max_weight"]
-    n = cfg.get("equal_weight_n")
-    if not n:
-        # Default: the most diversified book the min_weight floor permits.
-        n = int(1.0 / min_w) if min_w > 0 else len(returns)
-    n = min(n, len(returns))          # asking for more names than exist is not an error
+    n = _holdings_n(returns, cfg)     # asking for more names than exist is not an error
 
     weight = 1.0 / n
     if weight > max_w + 1e-12:
@@ -265,13 +262,138 @@ def equal_weight_topn_alloc(returns, covmat, cfg):
     return weights
 
 
-def allocate(returns, covmat, cfg, n_periods):
-    """Dispatch to the configured allocation method (cfg['allocation_method'])."""
+# ---------------------------------------------------------------------------
+# Model-free methods
+#
+# These began as backtest benchmarks, where their job was to ask whether the
+# transformer earns its keep. Over four walk-forward runs momentum led on net Sharpe
+# every time and equal-weight-top-N beat the model once, so they are selectable here
+# too. The rules themselves live in strategies.py, shared with the backtester; what
+# these adapters add is the production contract -- a Series over the FULL input index
+# with zeros for unheld names, summing to 1, respecting max_weight and the min_weight
+# floor via apply_consensus_floor.
+#
+# THE FLOOR MAKES THEM DIFFERENT STRATEGIES FROM THE BACKTESTED ONES. gmv and
+# inverse_vol naturally spread across every name at well under 1% each; floored at
+# min_weight they hold at most 1/min_weight (20 at the default 0.05), so production
+# gmv is "the 20 largest GMV weights" and will not reproduce the backtest numbers.
+# That is deliberate -- a 150-name book is not tradeable at this account size -- but
+# it must not be mistaken for the thing that was measured. See docs/PARAMETERS.md.
+# ---------------------------------------------------------------------------
+
+# Methods that never read the forecast. allocate() skips the mu-ranked pre-filter for
+# these; see the comment in allocate() for why that matters.
+MODEL_FREE_METHODS = {"equal_weight_all", "gmv", "inverse_vol", "momentum", "random"}
+
+
+def _holdings_n(returns, cfg):
+    """How many names the count-based methods hold.
+
+    Shared by equal_weight_topn, momentum and random rather than three separate keys.
+    The default is the most diversified book the floor permits, which is also the most
+    names any of these can hold once apply_consensus_floor runs.
+    """
+    min_w = cfg["min_weight"]
+    n = cfg.get("equal_weight_n")
+    if not n:
+        n = int(1.0 / min_w) if min_w > 0 else len(returns)
+    return min(n, len(returns))
+
+
+def equal_weight_all_alloc(returns, covmat, cfg):
+    """1/n across the whole allocation universe. The do-nothing baseline."""
+    w = strat.equal_weight_all(returns.index)
+    return apply_consensus_floor(w, cfg["min_weight"], cfg["max_weight"])
+
+
+def gmv_alloc(returns, covmat, cfg):
+    """Global minimum-variance. Uses the covariance only -- mu never enters.
+
+    If this matches the model's book, the forecast is contributing nothing and the
+    value sits in the Ledoit-Wolf estimate.
+    """
+    w = strat.gmv_weights(covmat, cfg["max_weight"])
+    return apply_consensus_floor(w, cfg["min_weight"], cfg["max_weight"])
+
+
+def inverse_vol_alloc(returns, covmat, cfg):
+    """Naive risk parity: weights proportional to 1/sigma, correlations ignored."""
+    w = strat.inverse_vol_weights(covmat)
+    return apply_consensus_floor(w, cfg["min_weight"], cfg["max_weight"])
+
+
+def momentum_alloc(returns, covmat, cfg, hist_rets=None):
+    """Equal weights on the best trailing performers over cfg['momentum_lookback'].
+
+    The only method needing the raw returns panel rather than the forecast, so it is
+    also the only one that can fail for want of an input step 3 did not used to pass.
+
+    `hist_rets` must end at the allocation date: the rule is "what went up recently",
+    and one period of future data turns it into an oracle. It is restricted to
+    returns.index here so a name outside the step-2 universe cannot be allocated just
+    because it rose.
+    """
+    if hist_rets is None:
+        raise ValueError(
+            "allocation_method 'momentum' needs the historical returns panel "
+            "(data/01_returns.csv), which the forecast-based methods do not. Pass "
+            "hist_rets to allocate(); pipeline/03_allocate.py does this for you.")
+    cols = [c for c in returns.index if c in hist_rets.columns]
+    missing = [c for c in returns.index if c not in hist_rets.columns]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} allocation candidates are absent from the returns panel, "
+            f"e.g. {missing[:5]}. Steps 1 and 2 are out of step -- re-run step 2.")
+    w = strat.momentum_weights(hist_rets[cols], _holdings_n(returns, cfg),
+                               cfg.get("momentum_lookback", 24))
+    return apply_consensus_floor(w, cfg["min_weight"], cfg["max_weight"])
+
+
+def random_alloc(returns, covmat, cfg):
+    """Equal weights on n names drawn uniformly at random. A CONTROL, not a strategy.
+
+    Kept selectable because it is the only honest way to ask, live, the question the
+    backtest asks with random_percentile: is this book distinguishable from luck? The
+    model's percentile against these sat between 0.52 and 0.59 across four runs.
+    Seeded from michaud_seed so a run is reproducible.
+    """
+    rng = np.random.default_rng(cfg.get("michaud_seed"))
+    w = strat.random_weights(list(returns.index), _holdings_n(returns, cfg), rng)
+    return apply_consensus_floor(w, cfg["min_weight"], cfg["max_weight"])
+
+
+def allocate(returns, covmat, cfg, n_periods, hist_rets=None):
+    """Dispatch to the configured allocation method (cfg['allocation_method']).
+
+    `returns` is mu (expected returns per name), not a returns panel; `hist_rets` is
+    the panel, needed only by momentum.
+
+    The allocation_top_n pre-filter is applied HERE rather than by the caller, because
+    it ranks by the model's mu. Handing that shortlist to a model-free method would
+    make it quietly model-dependent -- a "momentum" book chosen from the transformer's
+    150 favourites is not momentum, and would not match the strategy the backtest
+    scored. Model-free methods therefore see the whole step-2 universe.
+    """
     method = cfg.get("allocation_method", "parametric_michaud")
+    if method not in MODEL_FREE_METHODS:
+        returns, covmat = select_top_n(returns, covmat, cfg.get("allocation_top_n"),
+                                       cfg.get("allocation_ranking", "sharpe"))
     if method == "msr":
         return msr_eliminate(returns, covmat, cfg)
     if method == "parametric_michaud":
         return resampled_michaud(returns, covmat, cfg, n_periods)
     if method == "equal_weight_topn":
         return equal_weight_topn_alloc(returns, covmat, cfg)
-    raise ValueError(f"unknown allocation_method: {method!r}")
+    if method == "equal_weight_all":
+        return equal_weight_all_alloc(returns, covmat, cfg)
+    if method == "gmv":
+        return gmv_alloc(returns, covmat, cfg)
+    if method == "inverse_vol":
+        return inverse_vol_alloc(returns, covmat, cfg)
+    if method == "momentum":
+        return momentum_alloc(returns, covmat, cfg, hist_rets=hist_rets)
+    if method == "random":
+        return random_alloc(returns, covmat, cfg)
+    raise ValueError(
+        f"unknown allocation_method: {method!r}. Valid: msr, parametric_michaud, "
+        f"equal_weight_topn, equal_weight_all, gmv, inverse_vol, momentum, random")

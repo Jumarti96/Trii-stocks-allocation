@@ -47,15 +47,27 @@ universe_strata: null         # null = pure top-N by liquidity (mega-caps only a
                               # A list spreads the budget over equal liquidity bands, e.g.
                               # [200, 60, 40] with universe_topn 300. Must sum to topn.
 universe_price_floor: 0.0     # drop prices below this (penny stocks), in listing currency
-universe_min_market_cap: null # optional USD size floor; costs one yfinance call per stock
+universe_min_market_cap: null # optional size floor in USD (caps are converted from the
+                              # listing currency first). Free: step 1 already captures
+                              # market_cap. ETFs report none and are KEPT, not dropped.
 unknown_currency: exclude     # stock whose quote currency will not resolve: "exclude" or
                               # "assume_target" (see src/data_intake.convert_currency)
 
 # --- Portfolio optimisation (step 3) -----------------------------------------------
 allocation_top_n: 150         # candidates fed to the optimiser; null = no cap
 allocation_ranking: sharpe    # "sharpe" (mu/sigma) | "return" (mu only)
-allocation_method: parametric_michaud   # "parametric_michaud" | "msr" | "equal_weight_topn"
-# equal_weight_n: 12          # names held by equal_weight_topn; default = 1/min_weight
+allocation_method: parametric_michaud
+                              # FORECAST-BASED (use the step-2 mu):
+                              #   parametric_michaud | msr | equal_weight_topn
+                              # MODEL-FREE (ignore mu; were backtest benchmarks):
+                              #   equal_weight_all | gmv | inverse_vol | momentum | random
+                              # allocation_top_n is NOT applied to the model-free ones.
+                              # 'random' is a luck control, not a strategy.
+                              # See docs/PARAMETERS.md for what each does and how the
+                              # production form differs from the backtested one.
+# equal_weight_n: 20          # names held by equal_weight_topn / momentum / random;
+                              # default = 1/min_weight
+momentum_lookback: 24         # periods of trailing return that 'momentum' ranks on
 michaud_spread: 2.0           # s; draw scale on Sigma/T. See src/allocation.resampled_michaud
 michaud_mc_draws: 1000        # K Monte-Carlo mu draws
 michaud_seed: 0               # int = reproducible; null = fresh draws

@@ -245,3 +245,45 @@ def test_refresh_listings_forces_a_refetch(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "resolve_listings", spy)
     mod.main(["--refresh-listings"])
     assert len(fetched) > 0
+
+
+def test_step1_honours_the_liquidity_config(tmp_path, monkeypatch):
+    # These two keys sat in params.yaml doing NOTHING: activity_filter was called with
+    # no window= or min_active_fraction=, so its signature defaults won. The defaults
+    # happened to equal the YAML values, so changing them looked like it worked and
+    # silently did not. Assert the config now actually reaches the filter.
+    mod = _load_script()
+    close = pd.DataFrame({"FULL": [100.0] * 12, "HALF": [100.0] * 12}, index=IDX)
+    volume = pd.DataFrame({"FULL": [1000.0] * 12,
+                           "HALF": [1000.0, 0.0] * 6}, index=IDX)   # trades 50%
+    listings = pd.DataFrame(
+        {"currency": ["USD", "USD"], "unit_factor": [1.0, 1.0],
+         "symbol": ["FULL", "HALF"], "name": ["Full", "Half"],
+         "source": ["lookup", "lookup"], "sector": [None, None],
+         "industry": [None, None], "market_cap": [None, None],
+         "exchange": [None, None], "quote_type": [None, None]},
+        index=["FULL", "HALF"])
+    fx = pd.DataFrame({"USD": [1.0] * 12}, index=IDX)
+
+    cfg = mod.load_config()
+    cfg.update(unknown_currency="exclude", liquidity_window_fraction=1.0,
+               liquidity_min_active_fraction=0.85)
+    paths = {k: str(tmp_path / f"{k}.csv") for k in
+             ("01_prices", "01_returns", "01_volume", "01_currency", "01_fx")}
+    monkeypatch.setattr(mod, "load_config", lambda: cfg)
+    monkeypatch.setattr(mod, "PATHS", paths)
+    monkeypatch.setattr(mod, "load_tickers", lambda g: list(close.columns))
+    monkeypatch.setattr(mod, "download_all", lambda t, c: (close, volume))
+    monkeypatch.setattr(mod, "resolve_listings", lambda ids, **kw: listings.reindex(ids))
+    monkeypatch.setattr(mod, "fetch_fx_rates", lambda curs, index, hub="USD": fx)
+
+    mod.main([])
+    kept = set(pd.read_csv(paths["01_prices"], index_col=0).columns)
+    assert kept == {"FULL"}          # HALF trades 50% < 0.85 -> excluded
+
+    # Lower the bar and HALF must survive. Under the old dead-config behaviour this
+    # assertion fails, because 0.85 was hardcoded.
+    cfg["liquidity_min_active_fraction"] = 0.40
+    mod.main([])
+    kept = set(pd.read_csv(paths["01_prices"], index_col=0).columns)
+    assert kept == {"FULL", "HALF"}
