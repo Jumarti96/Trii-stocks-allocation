@@ -25,6 +25,8 @@ from backtesting import (
     random_weights,
     random_percentile,
     paired_comparison,
+    turnover,
+    drift_weights,
 )
 
 
@@ -216,3 +218,43 @@ def test_paired_comparison_beats_unpaired_on_correlated_series():
 def test_paired_comparison_reports_sample_size():
     out = paired_comparison(pd.Series([0.1, 0.2, 0.3]), pd.Series([0.0, 0.1, 0.2]))
     assert out["n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Turnover across windows whose name sets differ
+#
+# A backtest that re-screens its universe at every rebalance hands these functions
+# two books drawn from different name sets. Silently intersecting (or raising) would
+# either understate trading costs or abort the run mid-way, so pin the behaviour.
+# ---------------------------------------------------------------------------
+
+def test_turnover_of_disjoint_books_is_a_full_rotation():
+    prev = pd.Series({"A": 0.5, "B": 0.5})
+    new = pd.Series({"C": 0.5, "D": 0.5})
+    assert turnover(prev, new) == pytest.approx(1.0)
+
+
+def test_turnover_counts_names_dropped_by_a_re_screen():
+    # B fell out of the universe between windows; selling it is real trading, so it
+    # must show up. Intersecting the indices first would report 0.0.
+    prev = pd.Series({"A": 0.5, "B": 0.5})
+    new = pd.Series({"A": 1.0})
+    assert turnover(prev, new) == pytest.approx(0.5)
+
+
+def test_turnover_of_an_unchanged_book_is_zero_regardless_of_ordering():
+    prev = pd.Series({"A": 0.3, "B": 0.7})
+    new = pd.Series({"B": 0.7, "A": 0.3})
+    assert turnover(prev, new) == pytest.approx(0.0)
+
+
+def test_drift_weights_only_needs_the_names_it_holds():
+    # The previous window's forward returns cover that window's universe, which is
+    # wider than the book. Extra columns must not disturb the result.
+    weights = pd.Series({"A": 0.5, "B": 0.5})
+    fwd = pd.DataFrame({"A": [0.1, 0.1], "B": [0.0, 0.0], "GONE": [5.0, 5.0]})
+    out = drift_weights(weights, fwd)
+    assert set(out.index) == {"A", "B"}
+    # A grew 21%, B flat -> 0.605 / 1.105
+    assert out["A"] == pytest.approx(0.605 / 1.105)
+    assert out.sum() == pytest.approx(1.0)

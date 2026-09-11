@@ -1,16 +1,23 @@
 """
 Step 3 - Portfolio Allocation
 
-Dispatches on cfg['allocation_method']:
-  - "parametric_michaud" (default): resampled efficiency -- draw K mu ~ N(mu_bar, s^2*Sigma/T),
-    raw msr per draw, average the weights, one min_weight floor (src/allocation.resampled_michaud).
-  - "msr": the legacy Sharpe-max + batch-elimination loop (src/allocation.msr_eliminate).
+Dispatches on cfg['allocation_method']. Eight methods in two families:
 
-Before optimising, the full-universe mu and covmat from step 2 are pre-filtered to the
-top allocation_top_n stocks (ranked by allocation_ranking) to keep optimizer compute tractable
-for large universes. Set allocation_top_n: null to disable the cap.
+  FORECAST-BASED -- consume the transformer's mu from step 2:
+    "parametric_michaud" (default), "msr", "equal_weight_topn"
+  MODEL-FREE -- ignore mu entirely; they were backtest benchmarks first:
+    "equal_weight_all", "gmv", "inverse_vol", "momentum", "random"
 
-Reads  (data/): 01_returns.csv (for T), 02_expected_returns.csv, 02_covmat.csv
+See docs/PARAMETERS.md for what each does, what it reads, and how the production
+form differs from the backtested one.
+
+The allocation_top_n pre-filter is applied inside allocate(), not here, and only to
+the forecast-based methods: it ranks on the model's forecast (mu/sigma by default, or
+raw mu when allocation_ranking is 'return'), so applying it to a model-free method
+would make that method quietly model-dependent.
+
+Reads  (data/): 01_returns.csv (T, and the panel itself for momentum),
+                02_expected_returns.csv, 02_covmat.csv
 Outputs (data/):
     03_weights.csv - optimal weight per held stock
 """
@@ -26,7 +33,7 @@ warnings.filterwarnings('ignore')
 import pandas as pd
 
 from config import load_config, PATHS
-from allocation import allocate, select_top_n
+from allocation import allocate, MODEL_FREE_METHODS
 
 
 def main():
@@ -36,17 +43,33 @@ def main():
 
     returns  = pd.read_csv(PATHS['02_expected_returns'], index_col=0).iloc[:, 0]
     covmat   = pd.read_csv(PATHS['02_covmat'], index_col=0)
-    n_periods = len(pd.read_csv(PATHS['01_returns'], index_col=0))
+    # The panel itself, not just its length: momentum ranks on trailing returns rather
+    # than on the forecast. Every other method ignores it.
+    hist_rets = pd.read_csv(PATHS['01_returns'], index_col=0)
+    n_periods = len(hist_rets)
 
     top_n  = cfg.get('allocation_top_n')
     metric = cfg.get('allocation_ranking', 'sharpe')
-    returns, covmat = select_top_n(returns, covmat, top_n, metric)
 
+    # select_top_n is NOT applied here. It ranks on the model's forecast -- mu/sigma
+    # under allocation_ranking 'sharpe', raw mu under 'return' -- and allocate() skips
+    # it for the model-free methods: a momentum book picked from the transformer's 150
+    # favourites is not momentum.
     method = cfg.get('allocation_method', 'parametric_michaud')
-    print(f"Method: {method} | Universe: {len(returns)} stock(s) "
-          f"(top_n={top_n}, ranking={metric})")
+    model_free = method in MODEL_FREE_METHODS
+    shown = len(returns) if model_free else min(top_n or len(returns), len(returns))
+    print(f"Method: {method} | Universe: {shown} stock(s) "
+          + ("(model-free: allocation_top_n not applied)" if model_free
+             else f"(top_n={top_n}, ranking={metric})"))
 
-    weights = allocate(returns, covmat, cfg, n_periods)
+    if method == 'random':
+        print("\n  " + "!" * 68)
+        print("  WARNING: allocation_method 'random' picks names UNIFORMLY AT RANDOM.")
+        print("  It is a control for answering 'is this book better than luck?', not")
+        print("  an investment strategy. Do not trade this book.")
+        print("  " + "!" * 68 + "\n")
+
+    weights = allocate(returns, covmat, cfg, n_periods, hist_rets=hist_rets)
 
     held    = weights[weights.abs() > 1e-9]
     optimal = held.sort_values().to_frame('Weights')

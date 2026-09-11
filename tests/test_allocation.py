@@ -354,3 +354,201 @@ class TestSelectTopN:
         mu, cov = _universe5()
         with pytest.raises(ValueError):
             select_top_n(mu, cov, n=3, metric="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Model-free methods
+#
+# These were backtest benchmarks first. Momentum led on net Sharpe in all four
+# walk-forward runs and equal-weight-top-N beat the model in one, so they are
+# selectable in production -- but the production form is NOT the backtested form:
+# every method here ends with the min_weight floor, which caps any book at
+# 1/min_weight names. A floored gmv book is "the 20 largest gmv weights", not gmv.
+# ---------------------------------------------------------------------------
+
+from allocation import (equal_weight_all_alloc, gmv_alloc, inverse_vol_alloc,
+                        momentum_alloc, random_alloc, MODEL_FREE_METHODS)
+
+
+@pytest.fixture
+def cov20():
+    names = [f"S{i:02d}" for i in range(20)]
+    var = [0.01 + 0.002 * i for i in range(20)]      # S00 least volatile
+    return pd.DataFrame(np.diag(var), index=names, columns=names)
+
+
+def _wide_cfg(**over):
+    cfg = dict(CFG)
+    cfg.update(min_weight=0.05, max_weight=0.15)
+    cfg.update(over)
+    return cfg
+
+
+class TestEqualWeightAll:
+    def test_sums_to_one_and_keeps_full_index(self, cov20):
+        mu = pd.Series(0.1, index=cov20.index)
+        w = equal_weight_all_alloc(mu, cov20, _wide_cfg())
+        assert abs(w.sum() - 1.0) < 1e-9
+        assert list(w.index) == list(mu.index)
+
+    def test_universe_too_small_for_the_cap_raises(self, cov20):
+        # 5 names cannot sum to 1 under a 0.15 cap. Fail loudly rather than ship a
+        # book that breaks a stated limit.
+        mu = pd.Series(0.1, index=cov20.index[:5])
+        with pytest.raises(ValueError, match="max_weight"):
+            equal_weight_all_alloc(mu, cov20.iloc[:5, :5], _wide_cfg())
+
+
+class TestGmvAlloc:
+    def test_keeps_the_low_vol_name_and_respects_bounds(self, cov20):
+        w = gmv_alloc(pd.Series(0.1, index=cov20.index), cov20, _wide_cfg())
+        assert "S00" in w[w > 0].index          # least volatile of the 20
+        assert abs(w.sum() - 1.0) < 1e-9
+        assert w.max() <= 0.15 + 1e-9
+
+    def test_ignores_expected_returns(self, cov20):
+        cfg = _wide_cfg()
+        a = gmv_alloc(pd.Series(0.1, index=cov20.index), cov20, cfg)
+        b = gmv_alloc(pd.Series(range(20), index=cov20.index, dtype=float), cov20, cfg)
+        assert np.allclose(a.values, b.values)      # mu must not enter
+
+    def test_floor_is_enforced(self, cov20):
+        # The documented divergence from the backtest: unfloored gmv spreads across
+        # every name, floored it cannot hold a position below min_weight.
+        w = gmv_alloc(pd.Series(0.1, index=cov20.index), cov20, _wide_cfg())
+        assert (w[w > 0] >= 0.05 - 1e-9).all()
+
+
+class TestInverseVolAlloc:
+    def test_sums_to_one_and_respects_bounds(self, cov20):
+        w = inverse_vol_alloc(pd.Series(0.1, index=cov20.index), cov20, _wide_cfg())
+        assert abs(w.sum() - 1.0) < 1e-9
+        assert w.max() <= 0.15 + 1e-9
+        assert (w[w > 0] >= 0.05 - 1e-9).all()
+
+    def test_ignores_expected_returns(self, cov20):
+        cfg = _wide_cfg()
+        a = inverse_vol_alloc(pd.Series(0.1, index=cov20.index), cov20, cfg)
+        b = inverse_vol_alloc(pd.Series(range(20), index=cov20.index, dtype=float),
+                              cov20, cfg)
+        assert np.allclose(a.values, b.values)
+
+
+def _hist(names, winners):
+    """Returns panel where `winners` compound up and everything else is flat."""
+    idx = [f"p{i}" for i in range(40)]
+    return pd.DataFrame({n: [0.05 if n in winners else 0.0] * 40 for n in names},
+                        index=idx)
+
+
+class TestMomentumAlloc:
+    def test_picks_the_trailing_winners(self, cov20):
+        names = list(cov20.index)
+        winners = names[:8]
+        cfg = _wide_cfg(equal_weight_n=8, momentum_lookback=24)
+        w = momentum_alloc(pd.Series(0.1, index=names), cov20, cfg,
+                           hist_rets=_hist(names, winners))
+        assert set(w[w > 0].index) == set(winners)
+        assert abs(w.sum() - 1.0) < 1e-9
+
+    def test_ignores_expected_returns(self, cov20):
+        names = list(cov20.index)
+        cfg = _wide_cfg(equal_weight_n=8, momentum_lookback=24)
+        hist = _hist(names, names[:8])
+        a = momentum_alloc(pd.Series(0.1, index=names), cov20, cfg, hist_rets=hist)
+        # mu ordered opposite to the momentum winners: must not change the book.
+        b = momentum_alloc(pd.Series(range(20), index=names, dtype=float), cov20, cfg,
+                           hist_rets=hist)
+        assert np.allclose(a.values, b.values)
+
+    def test_uses_only_the_lookback_window(self, cov20):
+        # Older history must not leak in: S01 wins over 40 periods but LOSES over the
+        # last 24. S02 is the modest in-window gainer, so the two picks are decided by
+        # momentum rather than by an arbitrary tie-break among flat names.
+        names = list(cov20.index)
+        idx = [f"p{i}" for i in range(40)]
+        data = {n: [0.0] * 40 for n in names}
+        data["S00"] = [0.0] * 16 + [0.05] * 24        # strong only inside the window
+        data["S01"] = [0.9] * 16 + [-0.02] * 24       # strong only before it, then falls
+        data["S02"] = [0.0] * 16 + [0.01] * 24        # mild in-window gain
+        cfg = _wide_cfg(equal_weight_n=2, momentum_lookback=24, max_weight=0.6)
+        w = momentum_alloc(pd.Series(0.1, index=names), cov20, cfg,
+                           hist_rets=pd.DataFrame(data, index=idx))
+        assert set(w[w > 0].index) == {"S00", "S02"}
+        assert w["S01"] == 0
+
+    def test_raises_a_named_error_without_history(self, cov20):
+        # Momentum is the one method needing the raw panel; the error has to name
+        # the missing input rather than fail on a None dereference deep inside.
+        cfg = _wide_cfg(equal_weight_n=8)
+        with pytest.raises(ValueError, match="01_returns"):
+            momentum_alloc(pd.Series(0.1, index=cov20.index), cov20, cfg,
+                           hist_rets=None)
+
+    def test_scores_only_the_allocation_universe(self, cov20):
+        # The panel carries the whole downloaded catalogue; a name outside the
+        # step-2 universe must not be allocatable just because it rose.
+        names = list(cov20.index)
+        hist = _hist(names + ["OUTSIDER"], ["OUTSIDER"] + names[:7])
+        cfg = _wide_cfg(equal_weight_n=8, momentum_lookback=24)
+        w = momentum_alloc(pd.Series(0.1, index=names), cov20, cfg, hist_rets=hist)
+        assert "OUTSIDER" not in w.index
+        assert abs(w.sum() - 1.0) < 1e-9
+
+
+class TestRandomAlloc:
+    def test_is_reproducible_under_a_seed(self, cov20):
+        cfg = _wide_cfg(equal_weight_n=8, michaud_seed=7)
+        mu = pd.Series(0.1, index=cov20.index)
+        a = random_alloc(mu, cov20, cfg)
+        b = random_alloc(mu, cov20, cfg)
+        assert np.allclose(a.values, b.values)
+        assert abs(a.sum() - 1.0) < 1e-9
+
+    def test_different_seeds_differ(self, cov20):
+        mu = pd.Series(0.1, index=cov20.index)
+        a = random_alloc(mu, cov20, _wide_cfg(equal_weight_n=8, michaud_seed=1))
+        b = random_alloc(mu, cov20, _wide_cfg(equal_weight_n=8, michaud_seed=2))
+        assert not np.allclose(a.values, b.values)
+
+
+class TestModelFreeMethodsSkipTheModelPrefilter:
+    """allocation_top_n ranks by the model's mu. Handing that shortlist to a
+    model-free method would make it quietly model-dependent and stop it matching
+    the strategy the backtest scored, so allocate() applies the pre-filter only to
+    the methods that actually consume the forecast."""
+
+    def test_registry_lists_the_model_free_methods(self):
+        assert MODEL_FREE_METHODS == {"equal_weight_all", "gmv", "inverse_vol",
+                                      "momentum", "random"}
+
+    def test_gmv_result_does_not_depend_on_allocation_top_n(self, cov20):
+        mu = pd.Series(range(20), index=cov20.index, dtype=float)
+        wide = allocate(mu, cov20, _wide_cfg(allocation_method="gmv",
+                                             allocation_top_n=None), n_periods=100)
+        narrow = allocate(mu, cov20, _wide_cfg(allocation_method="gmv",
+                                               allocation_top_n=5), n_periods=100)
+        assert np.allclose(wide.values, narrow.values)
+
+    def test_michaud_still_honours_allocation_top_n(self, cov20):
+        mu = pd.Series(range(20), index=cov20.index, dtype=float) / 100
+        cfg = _wide_cfg(allocation_method="parametric_michaud", allocation_top_n=4,
+                        michaud_mc_draws=20, max_weight=0.6)
+        w = allocate(mu, cov20, cfg, n_periods=100)
+        assert set(w[w > 0].index) <= set(mu.nlargest(4).index)
+
+    def test_dispatcher_routes_each_new_method(self, cov20):
+        mu = pd.Series(0.1, index=cov20.index)
+        hist = _hist(list(cov20.index), list(cov20.index)[:8])
+        pairs = [("equal_weight_all", equal_weight_all_alloc),
+                 ("gmv", gmv_alloc),
+                 ("inverse_vol", inverse_vol_alloc)]
+        for name, fn in pairs:
+            cfg = _wide_cfg(allocation_method=name)
+            got = allocate(mu, cov20, cfg, n_periods=100)
+            assert np.allclose(got.values, fn(mu, cov20, cfg).values), name
+        cfg = _wide_cfg(allocation_method="momentum", equal_weight_n=8,
+                        momentum_lookback=24)
+        got = allocate(mu, cov20, cfg, n_periods=100, hist_rets=hist)
+        want = momentum_alloc(mu, cov20, cfg, hist_rets=hist)
+        assert np.allclose(got.values, want.values)

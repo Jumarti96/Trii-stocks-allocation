@@ -240,9 +240,14 @@ def test_resolve_listings_prefers_the_authoritative_lookup():
 
 
 def test_resolve_listings_falls_back_to_inference_when_lookup_is_empty():
-    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
+    # An empty response still yields a usable currency, so the run continues -- but
+    # it is recorded as 'failed', not 'inferred'. _yf_listing returns None only when
+    # it caught an exception, so None means the call did not answer, and a resume
+    # must retry it rather than trust the heuristic forever.
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None,
+                              retries=1, retry_wait=0.0)
     assert got.loc["ECOPETROL.CL", "currency"] == "COP"
-    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+    assert got.loc["ECOPETROL.CL", "source"] == "failed"
 
 
 def test_resolve_listings_records_the_minor_unit_factor():
@@ -264,11 +269,15 @@ def test_resolve_listings_parallel_preserves_input_order():
 def test_resolve_listings_parallel_matches_sequential():
     ids = ["A.L", "B", "C.SN"]
     fetch = lambda s: {"A.L": {"currency": "GBp"}, "B": {"currency": "USD"}}.get(s)
-    seq = di.resolve_listings(ids, fetch_fn=fetch, workers=1)
-    par = di.resolve_listings(ids, fetch_fn=fetch, workers=4)
+    kw = dict(fetch_fn=fetch, retries=1, retry_wait=0.0)
+    seq = di.resolve_listings(ids, workers=1, **kw)
+    par = di.resolve_listings(ids, workers=4, **kw)
     pd.testing.assert_frame_equal(seq, par)
     assert par.loc["A.L", "unit_factor"] == 0.01        # pence survives threading
-    assert par.loc["C.SN", "source"] == "inferred"      # fallback survives threading
+    # C.SN got no response at all -> 'failed' (retryable), with inference filling in
+    # meanwhile so the batch still completes.
+    assert par.loc["C.SN", "source"] == "failed"
+    assert par.loc["C.SN", "currency"] == "CLP"
 
 
 def test_resolve_listings_survives_a_failing_lookup():
@@ -277,9 +286,13 @@ def test_resolve_listings_survives_a_failing_lookup():
         if s == "BAD":
             raise RuntimeError("boom")
         return {"currency": "USD"}
-    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2)
+    got = di.resolve_listings(["GOOD", "BAD"], fetch_fn=flaky, workers=2,
+                              retries=1, retry_wait=0.0)
     assert got.loc["GOOD", "currency"] == "USD"
-    assert got.loc["BAD", "source"] == "inferred"       # fell back, did not crash
+    # Fell back and did not crash -- but recorded as 'failed', not 'inferred', so a
+    # resume knows to retry it rather than trusting the heuristic forever.
+    assert got.loc["BAD", "source"] == "failed"
+    assert got.loc["BAD", "currency"] is not None       # still usable meanwhile
 
 
 def test_resolve_listings_captures_symbol_and_name():
@@ -298,6 +311,37 @@ def test_resolve_listings_captures_symbol_and_name():
 def test_resolve_listings_falls_back_to_the_identifier_as_symbol():
     got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: None)
     assert got.loc["ECOPETROL.CL", "symbol"] == "ECOPETROL.CL"
+
+
+def test_resolve_listings_captures_classification_fields():
+    # Sector, size and instrument type ride along in the .info call already being
+    # made, so capturing them costs nothing -- and without them there is no way to
+    # audit whether a top-N liquidity screen keeps a sensible slice of the catalogue.
+    got = di.resolve_listings(
+        ["US67066G1040"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "NVDA",
+                            "sector": "Technology", "industry": "Semiconductors",
+                            "marketCap": 4.2e12, "exchange": "NMS",
+                            "quoteType": "EQUITY"})
+    row = got.loc["US67066G1040"]
+    assert row["sector"] == "Technology"
+    assert row["industry"] == "Semiconductors"
+    assert row["market_cap"] == pytest.approx(4.2e12)
+    assert row["exchange"] == "NMS"
+    assert row["quote_type"] == "EQUITY"
+
+
+def test_resolve_listings_leaves_a_missing_market_cap_as_nan():
+    # yfinance reports no marketCap for ETFs. Zero-filling would make every ETF fail
+    # select_universe's min_market_cap gate, which deliberately keeps NaN so they
+    # survive -- so the absence has to stay distinguishable from a genuine zero.
+    got = di.resolve_listings(
+        ["IE00B5BMR087"],
+        fetch_fn=lambda s: {"currency": "USD", "symbol": "CSPX.L",
+                            "quoteType": "ETF"})
+    assert pd.isna(got.loc["IE00B5BMR087", "market_cap"])
+    assert got.loc["IE00B5BMR087", "quote_type"] == "ETF"
+    assert pd.isna(got.loc["IE00B5BMR087", "sector"])
 
 
 def test_convert_currency_applies_unit_factors():
@@ -404,6 +448,80 @@ def test_convert_currency_excludes_a_currency_missing_from_fx():
     assert "A" not in out.index
 
 
+def test_convert_panel_scales_each_period_by_that_period_s_rate():
+    # The whole point of the panel form: a fixed-rate conversion would leave FX moves
+    # out of the returns, which is the bug it exists to fix.
+    idx = ["p1", "p2", "p3"]
+    fx = pd.DataFrame({"USD": [1.0, 1.0, 1.0], "COP": [0.00025, 0.00020, 0.00025]},
+                      index=idx)
+    prices = pd.DataFrame({"NVDA": [100.0, 100.0, 100.0],
+                           "ECO.CL": [4000.0, 4000.0, 4000.0]}, index=idx)
+    out = di.convert_panel(prices, {"NVDA": "USD", "ECO.CL": "COP"}, fx)
+    assert out["NVDA"].tolist() == pytest.approx([100.0, 100.0, 100.0])
+    assert out["ECO.CL"].tolist() == pytest.approx([1.0, 0.8, 1.0])
+    # A flat native price still produces a return, because COP depreciated.
+    assert out["ECO.CL"].pct_change().iloc[1] == pytest.approx(-0.2)
+
+
+def test_convert_panel_is_identity_for_a_hub_only_panel():
+    idx = ["p1", "p2"]
+    fx = pd.DataFrame({"USD": [1.0, 1.0]}, index=idx)
+    prices = pd.DataFrame({"A": [10.0, 11.0], "B": [5.0, 5.5]}, index=idx)
+    out = di.convert_panel(prices, {"A": "USD", "B": "USD"}, fx)
+    pd.testing.assert_frame_equal(out, prices)
+
+
+def test_convert_panel_applies_unit_factors():
+    idx = ["p1"]
+    fx = pd.DataFrame({"GBP": [1.35], "USD": [1.0]}, index=idx)
+    prices = pd.DataFrame({"VOD.L": [7000.0], "NVDA": [100.0]}, index=idx)
+    out = di.convert_panel(prices, {"VOD.L": "GBP", "NVDA": "USD"}, fx,
+                           unit_factors={"VOD.L": 0.01, "NVDA": 1.0})
+    assert out["VOD.L"].iloc[0] == pytest.approx(70.0 * 1.35)   # pence, not pounds
+    assert out["NVDA"].iloc[0] == pytest.approx(100.0)
+
+
+def test_convert_panel_to_an_arbitrary_target():
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0], "COP": [0.00025]}, index=idx)
+    out = di.convert_panel(pd.DataFrame({"NVDA": [100.0]}, index=idx),
+                           {"NVDA": "USD"}, fx, target="COP")
+    assert out["NVDA"].iloc[0] == pytest.approx(400_000.0)
+
+
+@pytest.mark.parametrize("policy,expected", [
+    ("exclude", None),          # column dropped entirely
+    ("assume_target", 500.0),   # taken at face value
+])
+def test_convert_panel_unknown_policy(policy, expected):
+    idx = ["p1"]
+    fx = pd.DataFrame({"USD": [1.0]}, index=idx)
+    prices = pd.DataFrame({"MYSTERY": [500.0], "NVDA": [100.0]}, index=idx)
+    out = di.convert_panel(prices, {"MYSTERY": None, "NVDA": "USD"}, fx,
+                           unknown=policy)
+    assert "NVDA" in out.columns
+    if expected is None:
+        assert "MYSTERY" not in out.columns
+    else:
+        assert out["MYSTERY"].iloc[0] == pytest.approx(expected)
+
+
+def test_convert_panel_rejects_an_unknown_policy_name():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="unknown_currency"):
+        di.convert_panel(pd.DataFrame({"A": [1.0]}, index=["p1"]), {"A": None}, fx,
+                         unknown="whatever")
+
+
+def test_convert_panel_raises_when_fx_does_not_cover_every_period():
+    # Silent misalignment would convert some periods at a neighbouring week's rate,
+    # producing fabricated returns. Refuse instead.
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    prices = pd.DataFrame({"A": [1.0, 2.0]}, index=["p1", "p2"])
+    with pytest.raises(ValueError, match="p2"):
+        di.convert_panel(prices, {"A": "USD"}, fx)
+
+
 def _universe(n, periods=8):
     """n synthetic tickers with ADV descending in ticker order (T00 most liquid)."""
     idx = [f"p{i}" for i in range(periods)]
@@ -503,3 +621,272 @@ def test_activity_health_counts_and_zero_volume_fraction():
     assert health["n_kept"] == 1
     assert health["n_excluded"] == 2
     assert health["zero_volume_fraction"] == pytest.approx(1 / 3)   # only DEAD has af==0
+
+
+def test_select_universe_gates_read_the_frame_tail_not_as_of():
+    # SHARP EDGE for backtest callers: as_of truncates the LIQUIDITY ranking only.
+    # The price_floor and active_fraction gates read the tail of whatever frame they
+    # are handed, so passing a full-history frame with an early as_of leaks future
+    # data through those gates. Callers must slice the frame themselves; this pins
+    # the behaviour so the requirement is discoverable rather than folklore.
+    idx = [f"p{i}" for i in range(6)]
+    # CHEAP was above the floor early and collapsed later; RICH did the reverse.
+    close = pd.DataFrame({"CHEAP": [100.0] * 3 + [1.0] * 3,
+                          "RICH": [1.0] * 3 + [100.0] * 3}, index=idx)
+    volume = pd.DataFrame({"CHEAP": [1e6] * 6, "RICH": [1.0] * 6}, index=idx)
+
+    # Full frame, as_of early: the floor still judges by the LAST rows, so the name
+    # that was expensive back then is excluded.
+    leaky = di.select_universe(close, volume, topn=1, window=3, price_floor=50.0,
+                               as_of="p2")
+    assert leaky == ["RICH"]
+
+    # Sliced frame: the floor now sees only history up to p2, and CHEAP qualifies.
+    honest = di.select_universe(close.iloc[:3], volume.iloc[:3], topn=1, window=3,
+                                price_floor=50.0, as_of="p2")
+    assert honest == ["CHEAP"]
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit resilience
+#
+# A 2,930-name catalogue tripped Yahoo's rate limiter partway through, and because a
+# raised exception fell back to inference exactly like a genuine absence, the run
+# reported success while 54% of the catalogue carried heuristic currencies. The
+# damage landed where it hurts: NL0015000RT3 is NRP.JO, quoted in Johannesburg cents,
+# but the NL prefix inferred EUR -- wrong currency AND a missing 100x minor-unit
+# factor, which floated it to rank 2 of the liquidity screen.
+# ---------------------------------------------------------------------------
+
+class _Flaky:
+    """Fails the first `n_failures` calls per identifier, then succeeds."""
+
+    def __init__(self, n_failures, info=None):
+        self.n_failures = n_failures
+        self.calls = {}
+        self.info = info or {"currency": "USD", "symbol": "OK"}
+
+    def __call__(self, ident):
+        self.calls[ident] = self.calls.get(ident, 0) + 1
+        if self.calls[ident] <= self.n_failures:
+            raise RuntimeError("Too Many Requests. Rate limited.")
+        return self.info
+
+
+def test_resolve_listings_retries_a_failing_lookup():
+    fetch = _Flaky(n_failures=2)
+    got = di.resolve_listings(["A"], fetch_fn=fetch, retries=3, retry_wait=0.0)
+    assert got.loc["A", "source"] == "lookup"
+    assert got.loc["A", "currency"] == "USD"
+    assert fetch.calls["A"] == 3
+
+
+def test_resolve_listings_marks_an_exhausted_lookup_as_failed_not_inferred():
+    # THE bug: an exception and a genuinely currency-less response both became
+    # 'inferred', so a rate-limited run was indistinguishable from a complete one.
+    # 'failed' is what makes a resume know which rows to retry.
+    got = di.resolve_listings(["ZAE000351946"], fetch_fn=_Flaky(n_failures=99),
+                              retries=2, retry_wait=0.0)
+    assert got.loc["ZAE000351946", "source"] == "failed"
+
+
+def test_resolve_listings_still_infers_when_the_lookup_genuinely_lacks_a_currency():
+    # A successful response with no currency field is not a failure -- inference is
+    # the right answer, and it must stay distinguishable from a dropped call.
+    got = di.resolve_listings(["ECOPETROL.CL"], fetch_fn=lambda s: {"symbol": "ECO"},
+                              retries=2, retry_wait=0.0)
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+
+
+def test_resolve_listings_reuses_already_resolved_rows():
+    # Resuming must not re-spend a network call on a name already resolved: that is
+    # the whole point, at ~1.5s per call across thousands of names.
+    existing = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["AAPL"],
+         "name": ["Apple"], "source": ["lookup"], "sector": ["Technology"],
+         "industry": ["Consumer Electronics"], "market_cap": [4.6e12],
+         "exchange": ["NMS"], "quote_type": ["EQUITY"]},
+        index=["US0378331005"])
+    fetch = _Flaky(n_failures=0, info={"currency": "JPY", "symbol": "7269.T"})
+    got = di.resolve_listings(["US0378331005", "JP3397200001"], fetch_fn=fetch,
+                              existing=existing, retries=1, retry_wait=0.0)
+    assert "US0378331005" not in fetch.calls          # not re-fetched
+    assert got.loc["US0378331005", "symbol"] == "AAPL"
+    assert got.loc["JP3397200001", "symbol"] == "7269.T"
+
+
+def test_resolve_listings_retries_rows_that_previously_failed():
+    # A resume must re-attempt exactly the rows the rate limiter ate.
+    existing = pd.DataFrame(
+        {"currency": ["EUR"], "unit_factor": [1.0], "symbol": ["NL0015000RT3"],
+         "name": [None], "source": ["failed"], "sector": [None], "industry": [None],
+         "market_cap": [None], "exchange": [None], "quote_type": [None]},
+        index=["NL0015000RT3"])
+    fetch = _Flaky(n_failures=0, info={"currency": "ZAc", "symbol": "NRP.JO"})
+    got = di.resolve_listings(["NL0015000RT3"], fetch_fn=fetch, existing=existing,
+                              retries=1, retry_wait=0.0)
+    assert fetch.calls["NL0015000RT3"] == 1
+    assert got.loc["NL0015000RT3", "currency"] == "ZAR"     # normalised from ZAc
+    assert got.loc["NL0015000RT3", "unit_factor"] == pytest.approx(0.01)
+
+
+def test_resolve_listings_retries_previously_inferred_rows_too():
+    # Inference is a fallback, not an answer. If a later pass can reach the network,
+    # an authoritative lookup should replace the heuristic.
+    existing = pd.DataFrame(
+        {"currency": ["USD"], "unit_factor": [1.0], "symbol": ["KYG875721634"],
+         "name": [None], "source": ["inferred"], "sector": [None], "industry": [None],
+         "market_cap": [None], "exchange": [None], "quote_type": [None]},
+        index=["KYG875721634"])
+    fetch = _Flaky(n_failures=0, info={"currency": "HKD", "symbol": "0700.HK"})
+    got = di.resolve_listings(["KYG875721634"], fetch_fn=fetch, existing=existing,
+                              retries=1, retry_wait=0.0)
+    assert got.loc["KYG875721634", "currency"] == "HKD"
+    assert got.loc["KYG875721634", "source"] == "lookup"
+
+
+# ---------------------------------------------------------------------------
+# Bad-tick defences
+#
+# Real defects found on the 2,923-name global catalogue. Each one silently produced
+# returns that crashed or would have poisoned the covariance matrix:
+#   - USDIDR=X carried a single tick of 0.75 against a true ~7.5e-5, exactly 10,000x
+#     high, which gave every Indonesian stock a +1,074,200% week and then -100%.
+#   - GB00B9XQT119 had one Close of 0.0 between two prices near 141, so pct_change
+#     returned -1.0 and then +inf, and LedoitWolf refused to fit.
+# ---------------------------------------------------------------------------
+
+def test_sanitise_fx_repairs_an_order_of_magnitude_spike():
+    idx = [f"p{i}" for i in range(6)]
+    fx = pd.DataFrame({"IDR": [7.5e-5, 7.5e-5, 0.75, 7.6e-5, 7.6e-5, 7.6e-5],
+                       "USD": [1.0] * 6}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 1
+    assert out["IDR"].iloc[2] == pytest.approx(7.5e-5, rel=0.1)
+    assert out["IDR"].max() < 1e-4
+    assert out["USD"].tolist() == [1.0] * 6          # untouched
+
+
+def test_sanitise_fx_leaves_a_real_devaluation_alone():
+    # The guard must not "repair" genuine FX moves. The largest real weekly move in
+    # the measured data was ZAR at 42%; a 60% crash is extreme but not a bad tick.
+    idx = [f"p{i}" for i in range(5)]
+    fx = pd.DataFrame({"ZAR": [0.10, 0.10, 0.04, 0.04, 0.04]}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 0
+    pd.testing.assert_frame_equal(out, fx)
+
+
+def test_sanitise_fx_leaves_a_sustained_trend_alone():
+    # A currency that halves gradually is a trend, not a tick, at every step.
+    idx = [f"p{i}" for i in range(6)]
+    fx = pd.DataFrame({"TRY": [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]}, index=idx)
+    out, repaired = di.sanitise_fx(fx)
+    assert repaired == 0
+
+
+def test_drop_bad_prices_replaces_non_positive_with_the_last_good_price():
+    # A zero adjusted close is never legitimate; carried into pct_change it yields
+    # -1.0 and then +inf, and the infinity is what actually stops the run.
+    idx = [f"p{i}" for i in range(5)]
+    px = pd.DataFrame({"A": [141.0, 0.0, 142.0, 143.0, 144.0],
+                       "B": [10.0, 11.0, -3.0, 12.0, 13.0]}, index=idx)
+    out, n = di.drop_bad_prices(px)
+    assert n == 2
+    assert out["A"].iloc[1] == pytest.approx(141.0)      # forward-filled
+    assert out["B"].iloc[2] == pytest.approx(11.0)
+    assert np.isfinite(out.pct_change().iloc[1:].values).all()
+
+
+def test_drop_bad_prices_backfills_a_leading_bad_value():
+    px = pd.DataFrame({"A": [0.0, 10.0, 11.0]}, index=["p0", "p1", "p2"])
+    out, n = di.drop_bad_prices(px)
+    assert out["A"].iloc[0] == pytest.approx(10.0)       # nothing earlier to carry
+    assert np.isfinite(out.pct_change().iloc[1:].values).all()
+
+
+def test_drop_implausible_names_removes_a_hundredfold_jump():
+    # Yahoo switches quote units mid-history on some lines: III.L, MEGP.L, OTV2.L,
+    # SLM.JO and PPH.JO all jump by almost exactly 100x partway through, a GBp/GBP
+    # or ZAc/ZAR flip in the source series rather than a market event. unit_factor is
+    # one value per name and cannot express a switch, so the name has to go.
+    rets = pd.DataFrame({
+        "GOOD": [0.01, -0.02, 0.03, 0.01],
+        "FLIPPED": [0.01, 99.0, -0.99, 0.01],
+    })
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert list(kept.columns) == ["GOOD"]
+    assert dropped == ["FLIPPED"]
+
+
+def test_drop_implausible_names_keeps_a_violent_but_real_move():
+    # A biotech can triple on trial results. The threshold has to sit above real
+    # extremes or the screen quietly deletes the most interesting names.
+    rets = pd.DataFrame({"BIOTECH": [0.02, 2.5, -0.4, 0.01]})
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert dropped == []
+    assert list(kept.columns) == ["BIOTECH"]
+
+
+def test_drop_implausible_names_catches_a_collapse_as_well_as_a_spike():
+    rets = pd.DataFrame({"CRASH": [0.01, -0.995, 120.0, 0.0]})
+    kept, dropped = di.drop_implausible_names(rets, max_return=5.0)
+    assert dropped == ["CRASH"]
+
+
+def test_an_empty_response_is_failed_not_inferred():
+    # yfinance swallows an HTTP 401 internally and returns a near-empty dict instead
+    # of raising, so exception-based failure detection misses it entirely. On the
+    # 20-year download that put 87 names on heuristic currencies -- 10 of them inside
+    # the top 300 -- while the run reported 0 failures. A response naming neither a
+    # currency nor a symbol nor a name is an absence of evidence, not evidence of
+    # absence, and must be retried rather than trusted.
+    got = di.resolve_listings(["DE0008051004"],
+                              fetch_fn=lambda s: {"trailingPegRatio": None},
+                              retries=1, retry_wait=0.0)
+    assert got.loc["DE0008051004", "source"] == "failed"
+
+
+def test_a_response_that_identifies_the_instrument_is_inferred_not_failed():
+    # The other side: the provider knows the listing and simply reports no currency
+    # field. Inference is the right answer there, and marking it 'failed' would make
+    # every resume re-fetch a name that will never improve.
+    got = di.resolve_listings(["ECOPETROL.CL"],
+                              fetch_fn=lambda s: {"symbol": "ECOPETROL.CL",
+                                                  "shortName": "Ecopetrol SA"},
+                              retries=1, retry_wait=0.0)
+    assert got.loc["ECOPETROL.CL", "source"] == "inferred"
+    assert got.loc["ECOPETROL.CL", "name"] == "Ecopetrol SA"
+
+
+def test_select_universe_market_cap_gate_keeps_nan():
+    # universe_min_market_cap was dead config until step 2 started passing market_cap.
+    # The gate must keep NaN rather than treating it as zero: yfinance reports no
+    # marketCap for ETFs, and zero-filling would silently delete every one of them.
+    idx = [f"p{i}" for i in range(6)]
+    close = pd.DataFrame({"BIG": [100.0] * 6, "SMALL": [100.0] * 6,
+                          "ETF": [100.0] * 6}, index=idx)
+    volume = pd.DataFrame({"BIG": [900.0] * 6, "SMALL": [1000.0] * 6,
+                           "ETF": [800.0] * 6}, index=idx)
+    caps = pd.Series({"BIG": 50e9, "SMALL": 1e8})          # ETF absent -> NaN
+    kept = di.select_universe(close, volume, topn=3, window=3,
+                              market_cap=caps, min_market_cap=1e9)
+    assert "BIG" in kept
+    assert "ETF" in kept            # NaN survives the gate
+    assert "SMALL" not in kept      # below the floor despite the highest volume
+
+
+def test_convert_currency_names_a_missing_target_currency():
+    # A bare "KeyError: 'COP'" out of pandas, 25 minutes into a pipeline run, does not
+    # tell you that 01_fx.csv lacks your report_currency or what to do about it.
+    fx = pd.DataFrame({"USD": [1.0], "EUR": [1.1]}, index=["p1"])
+    with pytest.raises(ValueError, match="COP"):
+        di.convert_currency(pd.Series({"NVDA": 100.0}), {"NVDA": "USD"}, fx,
+                            target="COP")
+
+
+def test_convert_panel_names_a_missing_target_currency():
+    fx = pd.DataFrame({"USD": [1.0]}, index=["p1"])
+    prices = pd.DataFrame({"A": [10.0]}, index=["p1"])
+    with pytest.raises(ValueError, match="COP"):
+        di.convert_panel(prices, {"A": "USD"}, fx, target="COP")

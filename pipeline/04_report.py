@@ -10,6 +10,16 @@ cfg['report_currency'] before display -- otherwise the price column mixes units 
 share count can be computed from it. Weights are dimensionless, so the money split was
 always correct regardless.
 
+Current and forecasted prices MUST be converted at the same FX rate (both default to
+when=-1 below). Expected returns are USD returns, so the shared rate is what makes the
+forecast column mean "today's price grown by the forecast USD return, priced in
+report_currency" -- converting the two legs at different rates would silently fold an
+FX forecast we do not have into the price. See the comment above forecasted_prices in
+pipeline/02_predict.py.
+
+The 'Expected Annual Return' column is therefore a USD return, not a return in
+report_currency.
+
 Reads  (data/): 01_returns.csv, 01_currency.csv, 01_fx.csv, 02_expected_returns.csv,
                 02_metadata.json, 03_weights.csv
 Outputs:

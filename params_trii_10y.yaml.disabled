@@ -1,3 +1,18 @@
+# ============================================================================
+# PRESERVED CONFIG -- the 10-year setup the Trii book was built and run on.
+#
+# Inactive by design: nothing loads this file. load_config() reads params.yaml
+# and only params.yaml, so the .disabled suffix is what keeps this copy from
+# being picked up, mirroring the stock_tickers/*.csv.inactive convention.
+#
+# To go back to it:      cp params_trii_10y.yaml.disabled params.yaml
+# (back up the live params.yaml first if the global run is still wanted.)
+#
+# The one setting that matters here is days_of_data: 3650. The global experiment
+# raises it to 7300 to double the number of walk-forward windows, which drops
+# every stock listed after ~2010 and so is wrong for the Trii book.
+# ============================================================================
+
 # Stock Allocation Pipeline - Configuration
 #
 # Put the tickers or ISINs you can actually buy in stock_tickers/*.csv (every .csv in
@@ -22,21 +37,7 @@ universe_topn: 500            # how many stocks the model forecasts, picked by l
 # --- Data and timing ---------------------------------------------------------------
 periods_per_year: 54          # 52 for weekly data, 12 for monthly
 interval: "1wk"               # "1wk" for weekly, "1mo" for monthly
-days_of_data: 5475            # historical window to download (days). 15y, raised from
-                              # 10y to buy statistical power: at cadence 24 with
-                              # min_train 300 the walk-forward gets 20 windows instead
-                              # of 13 (the study needs 63-125 to resolve the model's
-                              # effect, so this narrows the gap rather than closing it).
-                              #
-                              # 15y and not 20y because clean_batch drops any name
-                              # missing >15% of the window. Measured at 20y: 45 of the
-                              # top 300 vanished, including TSLA, META, NOW, BABA,
-                              # PANW, ABBV, SHOP and ANET -- the entire post-2009 IPO
-                              # cohort, which is exactly what drove 2016-2026 returns.
-                              # Against a 2011 start both TSLA (2010) and META (2012)
-                              # clear the threshold; only post-2013 listings are lost.
-                              #
-                              # Wrong for the Trii book; see params_trii_10y.yaml.disabled.
+days_of_data: 3650            # historical window to download (days)
 periods_to_forecast: 24       # horizon to predict and allocate for; must equal
                               # transformer_forecast_window when transformer_loss is rank_ic
 
@@ -47,27 +48,15 @@ universe_strata: null         # null = pure top-N by liquidity (mega-caps only a
                               # A list spreads the budget over equal liquidity bands, e.g.
                               # [200, 60, 40] with universe_topn 300. Must sum to topn.
 universe_price_floor: 0.0     # drop prices below this (penny stocks), in listing currency
-universe_min_market_cap: null # optional size floor in USD (caps are converted from the
-                              # listing currency first). Free: step 1 already captures
-                              # market_cap. ETFs report none and are KEPT, not dropped.
+universe_min_market_cap: null # optional USD size floor; costs one yfinance call per stock
 unknown_currency: exclude     # stock whose quote currency will not resolve: "exclude" or
                               # "assume_target" (see src/data_intake.convert_currency)
 
 # --- Portfolio optimisation (step 3) -----------------------------------------------
 allocation_top_n: 150         # candidates fed to the optimiser; null = no cap
 allocation_ranking: sharpe    # "sharpe" (mu/sigma) | "return" (mu only)
-allocation_method: parametric_michaud
-                              # FORECAST-BASED (use the step-2 mu):
-                              #   parametric_michaud | msr | equal_weight_topn
-                              # MODEL-FREE (ignore mu; were backtest benchmarks):
-                              #   equal_weight_all | gmv | inverse_vol | momentum | random
-                              # allocation_top_n is NOT applied to the model-free ones.
-                              # 'random' is a luck control, not a strategy.
-                              # See docs/PARAMETERS.md for what each does and how the
-                              # production form differs from the backtested one.
-# equal_weight_n: 20          # names held by equal_weight_topn / momentum / random;
-                              # default = 1/min_weight
-momentum_lookback: 24         # periods of trailing return that 'momentum' ranks on
+allocation_method: parametric_michaud   # "parametric_michaud" | "msr" | "equal_weight_topn"
+# equal_weight_n: 12          # names held by equal_weight_topn; default = 1/min_weight
 michaud_spread: 2.0           # s; draw scale on Sigma/T. See src/allocation.resampled_michaud
 michaud_mc_draws: 1000        # K Monte-Carlo mu draws
 michaud_seed: 0               # int = reproducible; null = fresh draws

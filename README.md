@@ -40,41 +40,22 @@ If you see `No GPU found — running on CPU.` instead, the CPU-only PyTorch buil
 
 All pipeline parameters live in **`params.yaml`** at the project root. Edit this file before running any option below — the orchestrator, individual pipeline scripts, and notebooks all read from it.
 
-```yaml
-# Timing & data
-periods_per_year: 54          # 52 for weekly, 12 for monthly
-interval: "1wk"              # "1wk" or "1mo"
-days_of_data: 3650
+**→ [`docs/PARAMETERS.md`](docs/PARAMETERS.md) documents every parameter**: what it does, valid values, which step reads it, the cross-parameter constraints, and the handful of options that exist in code but not in the YAML. It is the single source of truth; this section is only a starting point.
 
-# Activity filter (Step 1)
-min_active_fraction: 0.90     # Keep stocks traded in >= 90% of recent weeks
+The settings you are most likely to change:
 
-# Transformer model
-periods_to_forecast: 24       # Forecast/allocation horizon in periods
-transformer_loss: rank_ic     # Ranking objective; requires the line above to equal
-                              # transformer_forecast_window
-n_transformer_runs: 50        # Increase for stability; decrease to run faster
+| Parameter | Default | Change it when |
+|---|---|---|
+| `investment` | `120000000` | Your available capital changes. (Renamed from `investment_cop`, which now raises an error.) |
+| `rf_rate` | `0.11` | The risk-free rate moves, **or you change `report_currency`** — it must be denominated in the same currency. |
+| `allocation_method` | `parametric_michaud` | You want a different strategy. Eight are available, five of which ignore the forecast entirely — see the method table in the parameter reference. |
+| `universe_topn` | `500` | Your catalogue is large and you want to change how many stocks the model forecasts. Do not exceed ~600. |
+| `n_transformer_runs` | `150` | You want steadier forecasts (raise) or a faster run (lower). Linear in training time. |
 
-# Portfolio optimisation (Step 3)
-allocation_top_n: 150         # Candidates fed to the optimizer; null = no cap
-allocation_ranking: sharpe    # "sharpe" (mu/sigma) | "return" (mu only)
-allocation_method: parametric_michaud
-michaud_spread: 4.0
-michaud_mc_draws: 1000
-rf_rate: 0.11                 # 10-Y Colombian bond yield
-max_weight: 0.15
-min_weight: 0.05
+Two settings deserve a warning before you touch them:
 
-# Output
-investment_cop: 115000000     # Total capital (COP)
-output_path: "results/allocation_output.csv"
-```
-
-The most commonly adjusted parameters before each run are:
-- `investment_cop` — update to your current available capital
-- `rf_rate` — update to the current 10-year Colombian bond yield
-- `n_transformer_runs` — increase for more stable predictions; decrease to run faster
-- `allocation_top_n` — increase if you have more compute budget (optimizer scales O(N³))
+- **`days_of_data`** — a longer window silently deletes younger companies, because any name missing more than 15% of the window is dropped. At 20 years that removed 45 of the top 300, including Tesla and Meta.
+- **`min_weight`** — it caps the book at `1/min_weight` positions no matter which strategy you pick, so at the default `0.05` no method can hold more than 20 names.
 
 ---
 
@@ -126,24 +107,12 @@ The Transformer model itself lives in `src/transformer_model.py`.
 
 ---
 
-### Option 2 — Single-script (legacy)
-
-Runs the full pipeline end-to-end in a single process. No intermediate files are written.
-
-```bash
-python run_allocation.py
-```
-
-> Parameters for this option are still hardcoded at the top of `run_allocation.py`. For new runs, Option 1 is recommended.
-
----
-
-### Option 3 — Jupyter Notebooks (recommended for exploration and charts)
+### Option 2 — Jupyter Notebooks (exploration and charts)
 
 With your environment active, open Jupyter from the project root:
 
 ```bash
-jupyter notebook Notebooks/
+jupyter notebook notebooks/
 ```
 
 Run the four notebooks in order:
@@ -155,7 +124,7 @@ Run the four notebooks in order:
 | 3 | `3. Trii Catalog Sharpe-Ratio Maximizing Allocation.ipynb` | Maximises Sharpe ratio with weight constraints; plots efficient frontier |
 | 4 | `4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb` | Backtests CPPI strategy; runs Brownian motion simulation |
 
-Each notebook loads core parameters from `params.yaml` automatically. Intermediate CSV files are saved to `temp_references/` and picked up by the next notebook.
+Each notebook loads core parameters from `params.yaml` automatically.
 
 > **Note:** `pipeline/` is the source of truth. The notebooks are kept for exploration and charts and may lag the pipeline in methodology.
 
@@ -211,51 +180,45 @@ initialisation noise.
 ## Project Structure
 
 ```
-Trii Stocks allocation/
+Trii-stocks-allocation/
 ├── params.yaml                 # Single source of truth for all parameters
+├── params_trii_10y.yaml.disabled  # Inert snapshot of the 10-year Trii setup
 ├── orchestrator.py             # Pipeline runner — run all steps or a subset
-├── run_allocation.py           # Legacy single-script pipeline
 │
-├── pipeline/                   # One script per pipeline step
+├── pipeline/                   # One script per pipeline step (thin; no logic)
 │   ├── config.py               # Shared config loader (reads params.yaml)
-│   ├── 01_download.py          # Download & preprocess stock data + activity filter
-│   ├── 02_predict.py           # Transformer prediction + covariance (full universe)
-│   ├── 03_allocate.py          # Top-N pre-selection + Sharpe ratio optimisation
-│   └── 04_report.py            # Final report assembly
+│   ├── 01_download.py          # Download, activity filter, currency/FX, USD returns
+│   ├── 02_predict.py           # Universe screen + transformer forecast + covariance
+│   ├── 03_allocate.py          # Dispatch to the configured allocation method
+│   └── 04_report.py            # Final report assembly, currency conversion
 │
-├── data/                       # Intermediate files between pipeline steps
-│   ├── 01_prices.csv
-│   ├── 01_returns.csv
-│   ├── 02_expected_returns.csv
-│   ├── 02_covmat.csv
-│   ├── 02_predictions.csv
-│   ├── 02_metadata.json
-│   └── 03_weights.csv
+├── src/                        # Importable logic, unit-tested
+│   ├── data_intake.py          # Download, cleaning, currency resolution, universe screen
+│   ├── transformer_model.py    # Transformer + train_and_predict + capacity_report
+│   ├── allocation.py           # The eight allocation methods behind allocation_method
+│   ├── strategies.py           # Model-free weighting rules, shared with the backtester
+│   ├── backtesting.py          # Walk-forward engine: schedule, paired stats, mechanics
+│   └── risk_kit.py             # Financial stats, optimisation, simulation
 │
-├── results/
-│   └── allocation_output.csv   # Final allocation output
+├── tests/                      # pytest; run: .venv/Scripts/python.exe -m pytest tests/ -q
 │
-├── Notebooks/
-│   ├── 1. Trii Catalog Stock Pre-selection.ipynb
-│   ├── 2. Future returns and Covariance matrix estimation.ipynb
-│   ├── 3. Trii Catalog Sharpe-Ratio Maximizing Allocation.ipynb
-│   └── 4. Trii Catalog CPPI Strategy on Chosen Allocation with Brownian Motion Simulation.ipynb
+├── docs/
+│   └── PARAMETERS.md           # Every parameter: what it does, what reads it
 │
-├── src/
-│   ├── risk_kit.py             # Core module: financial stats, optimisation, simulation
-│   └── transformer_model.py    # Transformer model + train_and_predict
-│
-├── stock_tickers/
-│   ├── colombia_stocks_trii.csv
-│   └── global_stocks_trii.csv
-│
-├── temp_references/            # Intermediate CSVs shared between notebooks
+├── experiments/                # Untracked. Research harnesses; results are not
+│                               # committed, findings go into docstrings + commit messages
+├── data/                       # Untracked. Intermediate files between steps
+├── results/                    # allocation_output.csv
+├── stock_tickers/              # *.csv is the live catalogue; *.inactive is switched off
+├── notebooks/                  # Original exploratory notebooks
 └── experimental_notebooks/     # Alternative modelling experiments (not required)
 ```
 
-> `data/` and `temp_references/` are excluded from version control (`.gitignore`). Only `.gitkeep` files are tracked to preserve the directory structure.
-
----
+> `data/`, `data_*_backup/`, `results/*` and `experiments/` are excluded from version
+> control. Experiment results are deliberately not committed: a markdown report in the
+> working tree looks current no matter how stale it is. When a run drives a decision the
+> numbers go in the commit message that changes `params.yaml`, and the durable findings
+> go in the docstring of the code they constrain.
 
 ## Setup
 

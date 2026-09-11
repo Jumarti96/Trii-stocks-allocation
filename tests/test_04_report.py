@@ -123,6 +123,21 @@ def test_unresolvable_currency_does_not_break_the_run(tmp_path, monkeypatch):
     assert out.loc["NVDA", "Current Price (COP)"] == pytest.approx(400_000.0)
 
 
+def test_forecast_and_current_price_share_one_fx_rate(tmp_path, monkeypatch):
+    # Expected returns are USD returns applied to a native price, so the forecast is
+    # only meaningful if BOTH legs are converted at the same rate -- the rate then
+    # cancels and the column reads "today's price grown by the forecast USD return,
+    # priced in report_currency". Converting them at different rates would fold in an
+    # FX forecast the model never made, and the error would be invisible in the
+    # output. Pin the ratio rather than the level so this survives fixture changes.
+    mod = _load_script()
+    out = _run(mod, monkeypatch, _setup(tmp_path))
+    fcast_col = [c for c in out.columns if c.startswith("Forecasted Price")][0]
+    for name in ("NVDA", "ECO.CL"):
+        growth = out.loc[name, fcast_col] / out.loc[name, "Current Price (COP)"]
+        assert growth == pytest.approx(1.10)     # 110/100 and 4400/4000 alike
+
+
 def test_runs_without_currency_files(tmp_path, monkeypatch):
     # A data/ directory predating the currency work must still produce a report.
     mod = _load_script()

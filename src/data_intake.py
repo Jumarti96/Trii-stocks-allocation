@@ -15,11 +15,13 @@ orchestrator and the experiment/test suite can import these functions directly.
 import datetime
 import glob as _glob
 import re
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 warnings.filterwarnings("ignore")
 
+import numpy as np
 import pandas as pd
 
 
@@ -242,11 +244,40 @@ def _yf_listing(identifier):
         return None
 
 
-def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
+RESOLVED_SOURCES = ("lookup",)          # rows a resume can safely keep
+
+
+def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1,
+                     existing=None, retries=3, retry_wait=2.0, pause=0.0):
     """Authoritative listing metadata per identifier, falling back to inference.
 
     Returns a DataFrame indexed by the input identifier, with columns
-    ['currency', 'unit_factor', 'symbol', 'name', 'source'].
+    ['currency', 'unit_factor', 'symbol', 'name', 'source', 'sector', 'industry',
+    'market_cap', 'exchange', 'quote_type'].
+
+    `source` records HOW each row was obtained, and the distinction is load-bearing:
+        'lookup'   - authoritative, from the provider
+        'inferred' - the provider answered but named no currency; heuristic used
+        'failed'   - the call did not come back; heuristic used, RETRY THIS ROW
+
+    Separating the last two is what makes a rate-limited run recoverable. Collapsing
+    them once let a 2,930-name catalogue finish "successfully" with 54% of its
+    currencies guessed, and the guesses were worst exactly where the screen is most
+    sensitive: NL0015000RT3 is NRP.JO quoted in Johannesburg cents, but its Dutch
+    ISIN prefix inferred EUR, so it carried both the wrong rate and a missing 100x
+    minor-unit factor -- enough to float it to rank 2 of a global liquidity ranking.
+
+    existing: a previously written frame (i.e. 01_currency.csv). Rows whose source is
+        'lookup' are reused verbatim and cost no network call; everything else --
+        'failed', 'inferred', or absent -- is fetched again. Inference is a fallback,
+        not an answer, so a later pass that can reach the network should replace it.
+    retries/retry_wait: attempts per identifier and the base for exponential backoff.
+        Rate limiting is transient; the default retry ladder rides out a short block
+        rather than silently degrading to heuristics.
+    pause: seconds between calls when single-threaded. Measured: three workers with no
+        pause got blocked partway through 2,930 names, while one worker at 1.5s ran
+        clean. Slower in theory, faster in practice than a run whose second half is
+        guesswork.
 
     **Currency**: the exchange-suffix and ISIN-country tables are heuristics, measured
     at 87.5% over a 56-name stratified sample. The failures are not evenly spread:
@@ -263,45 +294,92 @@ def resolve_listings(identifiers, fetch_fn=None, verbose=False, workers=1):
     'US67066G1040' rather than 'NVDA', which cannot be traded against. The symbol
     arrives in the same call as the currency, so capturing it is free.
 
+    **Classification**: sector, industry, market_cap, exchange and quote_type ride
+    along in the same response. They are what make a top-N liquidity screen auditable
+    -- whether the survivors span the sectors, how much of the catalogue's market cap
+    they cover, and whether ETFs (whose ADV dwarfs single stocks) are crowding real
+    companies out of the ranking. market_cap is also the only data source for
+    select_universe's min_market_cap gate.
+
     Costs one network round-trip per identifier (~0.6-1.6s), so it is issued across
     `workers` threads and cached: step 1 writes 01_currency.csv and step 2 only reads
     it. A single failed lookup falls back to inference rather than aborting the run --
-    at 3,000 names, something will always fail.
+    at 3,000 names, something will always fail. Note that concurrency and rate limits
+    pull in opposite directions here: three workers over 2,930 names was enough to get
+    blocked, and the recovery pass runs single-threaded on purpose.
     """
     if fetch_fn is None:
         fetch_fn = _yf_listing
 
     def one(ident):
-        try:
-            info = fetch_fn(ident) or {}
-        except Exception:  # noqa: BLE001 - a bad identifier must not sink the batch
-            info = {}
+        info, failed = {}, False
+        for attempt in range(max(1, retries)):
+            try:
+                info = fetch_fn(ident) or {}
+                failed = False
+                break
+            except Exception:  # noqa: BLE001 - a bad identifier must not sink the batch
+                info, failed = {}, True
+                if attempt + 1 < max(1, retries) and retry_wait:
+                    # Exponential: a rate-limit block outlasts a flat retry, and
+                    # hammering it is what extended the block in the first place.
+                    time.sleep(retry_wait * (2 ** attempt))
+        # A response that names neither a currency nor a symbol nor a name did not
+        # actually answer. yfinance swallows an HTTP 401 internally and returns a
+        # near-empty dict rather than raising, so exception-based detection misses it
+        # completely: the 20-year download put 87 names on heuristic currencies, 10 of
+        # them inside the top 300, while reporting 0 failures. Treat that as 'failed'
+        # so it is retried and visible. A response that DOES identify the instrument
+        # but omits the currency is a genuine gap, and inference is the right answer.
+        identified = bool(info.get("symbol") or info.get("shortName")
+                          or info.get("longName"))
         cur, factor = normalise_currency_code(info.get("currency"))
         source = "lookup"
         if cur is None:
-            cur, factor, source = infer_currency(ident), 1.0, "inferred"
+            cur, factor = infer_currency(ident), 1.0
+            source = "failed" if (failed or not identified) else "inferred"
         return {
             "currency": cur,
             "unit_factor": factor,
             "symbol": info.get("symbol") or ident,
             "name": info.get("shortName") or info.get("longName") or "",
             "source": source,
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            # Left as None when absent, never 0.0: yfinance reports no marketCap for
+            # ETFs, and select_universe's min_market_cap gate keeps NaN on purpose so
+            # they survive the screen. Zero-filling would delete every one of them.
+            "market_cap": info.get("marketCap"),
+            "exchange": info.get("exchange"),
+            "quote_type": info.get("quoteType"),
         }
 
     ids = list(identifiers)
-    rows = {}
+    rows, todo = {}, ids
+    if existing is not None and len(existing):
+        keep = existing.reindex([i for i in ids if i in existing.index])
+        if "source" in keep.columns:
+            keep = keep[keep["source"].isin(RESOLVED_SOURCES)]
+            rows = {i: keep.loc[i].to_dict() for i in keep.index}
+            todo = [i for i in ids if i not in rows]
+            if verbose:
+                print(f"  reusing {len(rows)} resolved rows, fetching {len(todo)}",
+                      flush=True)
+
     if workers <= 1:
-        for i, ident in enumerate(ids):
+        for i, ident in enumerate(todo):
             rows[ident] = one(ident)
+            if pause and i + 1 < len(todo):
+                time.sleep(pause)
             if verbose and (i + 1) % 250 == 0:
-                print(f"  listing {i + 1}/{len(ids)}", flush=True)
+                print(f"  listing {i + 1}/{len(todo)}", flush=True)
     else:
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(one, ident): ident for ident in ids}
+            futures = {ex.submit(one, ident): ident for ident in todo}
             for i, fut in enumerate(as_completed(futures)):
                 rows[futures[fut]] = fut.result()
                 if verbose and (i + 1) % 250 == 0:
-                    print(f"  listing {i + 1}/{len(ids)}", flush=True)
+                    print(f"  listing {i + 1}/{len(todo)}", flush=True)
 
     # Threads finish out of order; callers zip this against price columns.
     return pd.DataFrame.from_dict(rows, orient="index").reindex(ids)
@@ -369,6 +447,90 @@ def fetch_fx_rates(currencies, index, hub="USD", fetch_fn=None):
     return pd.DataFrame(out, index=index)
 
 
+def sanitise_fx(fx, max_move=2.0):
+    """Repair single-period FX spikes that reverse immediately. Returns (fx, n_fixed).
+
+    Provider FX series carry occasional bad ticks, and one of them corrupts every
+    stock in that currency. Measured here: USDIDR=X reported 0.75 for the week of
+    2017-05-07 against a true rate near 7.5e-5 -- exactly 10,000x out, a decimal
+    slip -- which handed all six Indonesian names a +1,074,200% week followed by
+    -100%. Those returns then propagate into the covariance matrix.
+
+    A bad tick is identified as a move larger than `max_move` (as a ratio, so 2.0
+    means tripling or worse) that REVERSES at the next period. Both halves are
+    required: real currencies do crash, but they do not crash and fully recover in a
+    week. The largest genuine weekly move in the measured 10-year panel was ZAR at
+    42%, so the default sits far above anything real while still catching a 10,000x
+    slip. Offending points are replaced by interpolation between their neighbours.
+
+    A sustained devaluation is left alone at every step, since no step reverses.
+    """
+    out = fx.copy()
+    n_fixed = 0
+    for col in out.columns:
+        s = out[col].astype(float)
+        ratio = s / s.shift(1)
+        for i in range(1, len(s) - 1):
+            up, back = ratio.iloc[i], ratio.iloc[i + 1]
+            if not (np.isfinite(up) and np.isfinite(back)):
+                continue
+            spiked = up > (1 + max_move) or up < 1 / (1 + max_move)
+            reverted = (up > 1) != (back > 1) and abs(np.log(up * back)) < abs(np.log(up)) / 2
+            if spiked and reverted:
+                s.iloc[i] = (s.iloc[i - 1] + s.iloc[i + 1]) / 2.0
+                ratio = s / s.shift(1)
+                n_fixed += 1
+        out[col] = s
+    return out, n_fixed
+
+
+def drop_bad_prices(close):
+    """Replace non-positive prices with the last good one. Returns (close, n_fixed).
+
+    An adjusted close of 0 or below is never legitimate -- it is a hole in the feed.
+    Carried into pct_change it produces -1.0 and then +inf, and the infinity is what
+    actually halts a run: LedoitWolf refuses to fit a matrix containing one, several
+    hours into a backtest. Measured: one such tick on the 2,923-name catalogue
+    (GB00B9XQT119, a single 0.0 between two prices near 141).
+
+    Forward-fill rather than drop the name: one bad print is not a reason to discard
+    ten years of history. A leading bad value is back-filled, since there is nothing
+    earlier to carry forward.
+    """
+    bad = close <= 0
+    n_fixed = int(bad.values.sum())
+    if not n_fixed:
+        return close, 0
+    return close.mask(bad).ffill().bfill(), n_fixed
+
+
+def drop_implausible_names(rets, max_return=5.0):
+    """Remove stocks whose return series contains an impossible move. (rets, dropped).
+
+    Unlike sanitise_fx and drop_bad_prices, this does not repair -- it excludes. The
+    defect it catches is a quote-unit switch inside the provider's own price series:
+    III.L, MEGP.L, OTV2.L, SLM.JO and PPH.JO each jump by almost exactly 100x
+    partway through their history, a GBp/GBP or ZAc/ZAR flip. unit_factor is a
+    single value per name and cannot express a switch that happens mid-series, so
+    there is nothing to correct with; the honest move is to drop the name and say so.
+
+    Excluding matters even when such a name looks harmless. A 100x price jump also
+    inflates Close * Volume by 100x for the rest of the history, which is what
+    select_universe ranks by -- so a corrupted line is actively pushed TOWARD the
+    modelled universe, and once inside it dominates both the covariance matrix and
+    any cross-sectional ranking the model learns.
+
+    max_return defaults to 5.0 (+400% in one period), far above real extremes: a
+    biotech can triple on trial results, but it does not gain 10,000%. Measured on
+    the 2,923-name catalogue: 26 names exceed it, 0.9% of the universe.
+    """
+    worst = rets.abs().max()
+    dropped = sorted(worst.index[worst > max_return])
+    if not dropped:
+        return rets, []
+    return rets.drop(columns=dropped), dropped
+
+
 UNKNOWN_CURRENCY_POLICIES = ("exclude", "assume_target")
 
 
@@ -401,6 +563,13 @@ def convert_currency(amounts, cur_map, fx, target=None, when=-1, unit_factors=No
             f"got {unknown!r}")
 
     rates = fx.iloc[when]
+    if target is not None and target not in rates.index:
+        raise ValueError(
+            f"no FX rate for target currency {target!r}. 01_fx.csv covers "
+            f"{sorted(rates.index)}. If {target!r} is your report_currency, re-run "
+            f"pipeline/01_download.py --resume: step 1 now always fetches it, even "
+            f"when no holding is quoted in it.")
+
     denom = 1.0 if target is None else float(rates[target])
 
     scale = {}
@@ -414,6 +583,66 @@ def convert_currency(amounts, cur_map, fx, target=None, when=-1, unit_factors=No
         else:
             scale[t] = None
     return (amounts * pd.Series(scale, dtype="float64")).dropna()
+
+
+def convert_panel(prices, cur_map, fx, target=None, unit_factors=None,
+                  unknown="exclude"):
+    """Convert a whole price panel into `target`, each period at its own FX rate.
+
+    prices: DataFrame (period x ticker) of local-currency prices. Arguments otherwise
+    match convert_currency, of which this is the per-period generalisation: that one
+    converts a snapshot at a single `when`, this one converts every row.
+
+    The difference matters for returns. pct_change() on native prices treats a flat
+    COP-quoted stock as a flat holding, when a USD investor holding it through a 20%
+    peso depreciation lost 20%. Converting first puts the FX move inside the return,
+    which is what makes a multi-currency universe summable at all -- and what makes a
+    comparison against a USD benchmark such as the S&P 500 mean anything.
+
+    Tickers whose currency is unresolved or has no FX column are DROPPED under the
+    default 'exclude' policy -- whole columns, not scattered NaNs, so a caller that
+    zips the result against another frame cannot silently misalign.
+
+    Raises ValueError if `fx` does not cover every period in `prices`. Reindexing with
+    a gap would convert those rows at a neighbouring week's rate and manufacture a
+    return that never happened, so the gap is reported rather than filled.
+    """
+    if unknown not in UNKNOWN_CURRENCY_POLICIES:
+        raise ValueError(
+            f"unknown_currency policy must be one of {UNKNOWN_CURRENCY_POLICIES}, "
+            f"got {unknown!r}")
+
+    missing_periods = [p for p in prices.index if p not in fx.index]
+    if missing_periods:
+        raise ValueError(
+            f"fx is missing {len(missing_periods)} of the panel's periods, e.g. "
+            f"{missing_periods[:5]}. Refusing to convert: filling the gap would "
+            f"price those rows at another period's rate.")
+
+    rates = fx.loc[prices.index]
+    if target is not None and target not in rates.columns:
+        raise ValueError(
+            f"no FX rate for target currency {target!r}. 01_fx.csv covers "
+            f"{sorted(rates.columns)}. If {target!r} is your report_currency, re-run "
+            f"pipeline/01_download.py --resume.")
+    denom = 1.0 if target is None else rates[target]
+
+    scales, dropped = {}, []
+    for t in prices.columns:
+        cur = cur_map.get(t)
+        factor = 1.0 if unit_factors is None else unit_factors.get(t, 1.0)
+        if cur in rates.columns:
+            scales[t] = rates[cur] * factor / denom
+        elif unknown == "assume_target":
+            scales[t] = pd.Series(factor, index=prices.index)
+        else:
+            dropped.append(t)
+
+    kept = [t for t in prices.columns if t not in dropped]
+    if not kept:
+        return prices.iloc[:, :0].copy()
+    scale = pd.DataFrame(scales)[kept]
+    return prices[kept] * scale
 
 
 def avg_dollar_volume(close, volume, window, fx=None, cur_map=None, as_of=None,
