@@ -69,8 +69,8 @@ a visible gap for an invisible error.
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `allocation_top_n` | `150` | Candidates fed to the optimiser. `null` = no cap. **Applied only to forecast-based methods** — it ranks by the model's mu, so applying it to a model-free method would make that method quietly model-dependent. |
-| `allocation_ranking` | `sharpe` | `sharpe` (mu/σ) \| `return` (mu only). Used by `allocation_top_n` and by `equal_weight_topn`. |
+| `allocation_top_n` | `150` | Candidates fed to the optimiser. `null` = no cap. **Applied only to forecast-based methods** — it ranks on the model's forecast (by `allocation_ranking`), so applying it to a model-free method would make that method quietly model-dependent. |
+| `allocation_ranking` | `sharpe` | `sharpe` ranks by **mu/σ** — the forecast return divided by that stock's own volatility (covariance *diagonal* only, so correlations are ignored). `return` ranks by raw mu. Used by `allocation_top_n` and by `equal_weight_topn`. This per-stock score is **not** the portfolio Sharpe that `msr`/`parametric_michaud` maximise, which does use the full covariance. |
 | `allocation_method` | `parametric_michaud` | See the table below. |
 | `equal_weight_n` | *commented out*; defaults to `1/min_weight` = 20 | Names held by `equal_weight_topn`, `momentum` and `random`. The comment in `params.yaml` historically claimed 12; the real default is 20. |
 | `momentum_lookback` | `24` | Periods of trailing return that `momentum` ranks on. |

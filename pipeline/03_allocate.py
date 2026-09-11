@@ -12,8 +12,9 @@ See docs/PARAMETERS.md for what each does, what it reads, and how the production
 form differs from the backtested one.
 
 The allocation_top_n pre-filter is applied inside allocate(), not here, and only to
-the forecast-based methods: it ranks by the model's mu, so applying it to a model-free
-method would make that method quietly model-dependent.
+the forecast-based methods: it ranks on the model's forecast (mu/sigma by default, or
+raw mu when allocation_ranking is 'return'), so applying it to a model-free method
+would make that method quietly model-dependent.
 
 Reads  (data/): 01_returns.csv (T, and the panel itself for momentum),
                 02_expected_returns.csv, 02_covmat.csv
@@ -50,9 +51,10 @@ def main():
     top_n  = cfg.get('allocation_top_n')
     metric = cfg.get('allocation_ranking', 'sharpe')
 
-    # select_top_n is NOT applied here. It ranks by the model's mu, and allocate()
-    # skips it for the model-free methods -- a momentum book picked from the
-    # transformer's 150 favourites is not momentum.
+    # select_top_n is NOT applied here. It ranks on the model's forecast -- mu/sigma
+    # under allocation_ranking 'sharpe', raw mu under 'return' -- and allocate() skips
+    # it for the model-free methods: a momentum book picked from the transformer's 150
+    # favourites is not momentum.
     method = cfg.get('allocation_method', 'parametric_michaud')
     model_free = method in MODEL_FREE_METHODS
     shown = len(returns) if model_free else min(top_n or len(returns), len(returns))

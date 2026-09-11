@@ -369,10 +369,15 @@ def allocate(returns, covmat, cfg, n_periods, hist_rets=None):
     the panel, needed only by momentum.
 
     The allocation_top_n pre-filter is applied HERE rather than by the caller, because
-    it ranks by the model's mu. Handing that shortlist to a model-free method would
-    make it quietly model-dependent -- a "momentum" book chosen from the transformer's
-    150 favourites is not momentum, and would not match the strategy the backtest
-    scored. Model-free methods therefore see the whole step-2 universe.
+    it ranks on the model's FORECAST: by mu/sigma under the default
+    allocation_ranking='sharpe', or by raw mu under 'return'. Either way the shortlist
+    is model-derived, so handing it to a model-free method would make that method
+    quietly model-dependent -- a "momentum" book chosen from the transformer's 150
+    favourites is not momentum, and would not match the strategy the backtest scored.
+    Model-free methods therefore see the whole step-2 universe.
+
+    Note that this per-stock mu/sigma score is NOT the portfolio Sharpe the optimiser
+    maximises: it uses only the covariance diagonal, so it ignores correlations.
     """
     method = cfg.get("allocation_method", "parametric_michaud")
     if method not in MODEL_FREE_METHODS:
