@@ -66,6 +66,16 @@ def _resolve_transformer_config(cfg):
                 f"periods_to_forecast is {cfg['periods_to_forecast']}, so only the "
                 f"first {cfg['periods_to_forecast']} are used. Set them equal, or "
                 f"use transformer_loss: auto.")
+
+    # Decay rate of the per-period weights that collapse the forecast into the mu the
+    # optimiser consumes. null (the default) lets transformer_model.decay_lambda scale it
+    # with periods_to_forecast, which is what keeps the weighted window and the horizon
+    # the model was trained for from drifting apart. Only pin it to reproduce an old run.
+    cfg.setdefault('forecast_decay_lambda', None)
+    lam = cfg['forecast_decay_lambda']
+    if lam is not None and not (isinstance(lam, (int, float)) and lam > 0):
+        raise ValueError(
+            f"forecast_decay_lambda must be a positive number or null, got {lam!r}")
     return cfg
 
 

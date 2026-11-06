@@ -48,10 +48,32 @@ from config import load_config
 
 
 def test_real_params_load_with_B_arch():
+    # Asserts the INVARIANT, not the horizon of the day: rank_ic requires the decode
+    # window and the consumed horizon to match, and pinning a literal here only meant
+    # this test broke every time the horizon moved.
     cfg = load_config()
     assert cfg['transformer_arch'] == 'B'
-    assert cfg['transformer_forecast_window'] == 24
     assert cfg['transformer_forecast_window'] >= cfg['periods_to_forecast']
+    if cfg['transformer_loss'] == 'rank_ic':
+        assert cfg['transformer_forecast_window'] == cfg['periods_to_forecast']
+
+
+def test_forecast_decay_lambda_defaults_to_null():
+    # null means "scale with the horizon" in transformer_model.decay_lambda; config must
+    # not substitute a number here or the scaling is bypassed.
+    cfg = _resolve_transformer_config(_base_cfg())
+    assert cfg['forecast_decay_lambda'] is None
+
+
+def test_forecast_decay_lambda_rejects_nonpositive():
+    for bad in (0, -0.1, "0.2"):
+        with pytest.raises(ValueError, match="forecast_decay_lambda"):
+            _resolve_transformer_config(_base_cfg(forecast_decay_lambda=bad))
+
+
+def test_explicit_forecast_decay_lambda_preserved():
+    cfg = _resolve_transformer_config(_base_cfg(forecast_decay_lambda=0.2))
+    assert cfg['forecast_decay_lambda'] == 0.2
 
 
 def test_transformer_loss_defaults_to_auto():

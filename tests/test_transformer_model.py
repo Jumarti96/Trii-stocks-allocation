@@ -12,6 +12,7 @@ from transformer_model import (
     annualize_period_return,
     annualize_expected_returns,
     weighted_mean_return,
+    decay_lambda,
     _normalise_crosssectional,
     _denormalise_crosssectional,
 )
@@ -91,6 +92,40 @@ def test_optimization_mu_has_no_ppy_dependence():
     # takes no periods_per_year argument -> changing frequency cannot distort it.
     preds = pd.DataFrame({"A": [0.01, 0.02, 0.03], "B": [-0.01, 0.0, 0.01]})
     pd.testing.assert_series_equal(weighted_mean_return(preds), weighted_mean_return(preds))
+
+
+def test_decay_lambda_reproduces_the_validated_rate_at_h24():
+    # 4.8/24 is exactly the 0.2 the pipeline was calibrated with, so the horizon-scaled
+    # default is a no-op at the horizon it was validated at.
+    assert abs(decay_lambda(24) - 0.2) < 1e-12
+    assert decay_lambda(54, lambda_=0.2) == 0.2     # an explicit rate still wins
+
+
+def test_weighted_mean_return_weight_mass_is_horizon_invariant():
+    # The guard against the decay silently decoupling from the horizon: whatever H is,
+    # the first half of the decode window must carry the same share of the weight. With a
+    # FIXED lambda_ it does not -- at 0.2, H=54's first half carries 99.6% against H=4's
+    # 60%, which is how a longer horizon ends up trained for but never allocated on.
+    def first_half_mass(h, lambda_=None):
+        # One stock holding 1.0 for the first h/2 periods and 0.0 after, so the weighted
+        # mean IS the weight mass over that first half.
+        half = h // 2
+        preds = pd.DataFrame({"A": [1.0] * half + [0.0] * (h - half)})
+        return weighted_mean_return(preds, lambda_=lambda_)["A"]
+
+    masses = [first_half_mass(h) for h in (12, 24, 54, 104)]
+    assert max(masses) - min(masses) < 0.01, masses
+
+    fixed = [first_half_mass(h, lambda_=0.2) for h in (12, 24, 54, 104)]
+    assert max(fixed) - min(fixed) > 0.1, fixed
+
+
+def test_weighted_mean_return_still_discounts_the_far_horizon():
+    # Horizon-invariant is not flat: nearer periods must keep more weight at every H.
+    for h in (24, 54):
+        near = pd.DataFrame({"A": [1.0] + [0.0] * (h - 1)})
+        far  = pd.DataFrame({"A": [0.0] * (h - 1) + [1.0]})
+        assert weighted_mean_return(near)["A"] > weighted_mean_return(far)["A"]
 
 
 def test_annualize_expected_returns_delegates_to_helper():
