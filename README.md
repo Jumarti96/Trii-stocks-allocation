@@ -5,6 +5,44 @@ This project implements a portfolio optimization pipeline for stocks available o
 
 ---
 
+## The Trii universe
+
+`stock_tickers/*.csv` mirrors Trii's published catalogue at
+<https://trii.co/stock-list> — 36 local (BVC) names in `colombia_stocks_trii.csv`
+and its 94 global ones in `global_stocks_trii.csv` (92 rows — see the two
+known gaps below). Re-read that page when refreshing
+the universe; it is the authoritative list of what can actually be bought.
+
+Trii labels every global instrument with a `CO`-suffixed BVC Mercado Global code
+(`MSFTCO`, `IUFSCO`). Those codes are **not** on Yahoo, and the handful that are
+carry only weeks of history, so each one is mapped to the longest-history line of
+the same instrument instead — `MSFTCO` → `MSFT`, `IUFSCO` → `IUFS.L`. Two
+consequences worth knowing before editing these files:
+
+- **Strip the `CO` and look the instrument up; do not guess.** `LQDACO` is the
+  iShares $ Corp Bond ETF (`LQDA.L`), but bare `LQDA` is Liquidia Corporation, a
+  Nasdaq biotech — and it downloads cleanly, so the mistake is invisible in the
+  step-1 failure list. `RBOTCO`/`RBOT` has the same trap (Vicarious Surgical).
+- **Cross-listed ETFs need the right venue.** Only some have a USD line on the
+  LSE: `ICHN` and `IDSE` are Amsterdam/SIX only, and `I500.AS` is USD where
+  `I500.L` is GBP and `I500.DE` EUR. Picking the wrong one feeds the liquidity
+  screen a wrongly denominated magnitude.
+
+Two catalogue entries have no usable Yahoo series and are deliberately absent, so
+128 of the 130 are covered:
+
+| Catalogue code | Instrument | Why |
+|---|---|---|
+| `IPCHBC1CO` | Inversiones Portuarias Chancay (BVL, listed Jun 2024) | no coverage at any venue — `.LM`, `.CL` and the Class A line `IPCHAC1` all return nothing |
+| `AMDVASCCO` | Compass DVA Silicon Fund | resolves on BVC, but Yahoo holds a single bar |
+
+The catalogue is one of two universes the pipeline can run on; the other is the
+much broader ISIN list described in the overview above
+(`stock_tickers/isins_procesados.csv`). Only the files *not* suffixed
+`.inactive` are picked up by `load_tickers`.
+
+---
+
 ## GPU Acceleration (Strongly Recommended)
 
 The Transformer Neural Network is the most computationally intensive step in the pipeline. **Running with a CUDA-compatible NVIDIA GPU is strongly recommended** — it can reduce training time by 10–30× compared to CPU.
