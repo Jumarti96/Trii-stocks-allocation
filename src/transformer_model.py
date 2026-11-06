@@ -225,6 +225,28 @@ def capacity_report(n_stocks, n_periods, cfg, arch=None):
     minimum detectable difference of 0.289 against effects near 0.1. So these limits
     rest on the dispersion result and on the parameter count, NOT on measured accuracy.
 
+    SHARING WEIGHTS ACROSS STOCKS WAS TESTED AND LOST. The obvious response to "stocks
+    are the feature axis, so the universe adds parameters and no samples" is to apply
+    one shared encoder per stock instead, fixing the parameter count at 598,552
+    whatever the universe size against 2,206,944 at n=500. Measured on five
+    non-overlapping 24-week blocks, 500-name point-in-time universe, both arms on
+    identical training slices with identical optimiser steps per epoch:
+
+                          mean rank IC   random_pct   sd across blocks
+        this architecture     +0.086        0.86           0.081
+        shared per-stock      -0.021        0.51           0.173
+
+    The shared model won 1 block of 5, and random_pct 0.51 means its forecast was
+    indistinguishable from a random shuffle of itself. It was not undertrained: its
+    training loss moved only +0.012 over epochs 25-50, so it converged, fit the
+    training cross-sections, and failed to generalise with a THIRD of the parameters.
+    That is the opposite of the regularisation argument that motivated it.
+
+    The lesson for this function is narrow but real: a high params_per_sample ratio is
+    not on its own evidence that fewer parameters would forecast better. Whatever this
+    architecture is doing with its per-stock input columns and output neurons is worth
+    more than the capacity ratio suggests it should be.
+
     Returns {'n_stocks', 'n_periods', 'n_samples', 'n_params', 'params_per_sample',
     'verdict', 'message'} with verdict in {'ok', 'warn', 'error'}.
     """
@@ -457,16 +479,42 @@ def compute_scale_ratio(preds_df, returns_df):
     }
 
 
-def weighted_mean_return(preds_df, lambda_=0.2):
+# lambda_ * horizon at the validated configuration (lambda_=0.2 at H=24). Holding this
+# product fixed is what makes the weight SHAPE horizon-invariant: the decay spans the same
+# fraction of the decode window whatever the horizon. See weighted_mean_return.
+DECAY_WEIGHT_SPAN = 4.8
+
+
+def decay_lambda(periods, lambda_=None):
+    """Resolve the exponential decay rate for a `periods`-long forecast window.
+
+    An explicit lambda_ passes through unchanged; None scales it with the horizon.
+    """
+    if lambda_ is not None:
+        return float(lambda_)
+    return DECAY_WEIGHT_SPAN / max(1, periods)
+
+
+def weighted_mean_return(preds_df, lambda_=None):
     """Exponential-decay-weighted mean of the per-period predicted returns, per column.
 
     This is the 'raw' forecast level *before* annualisation - nearer-term forecasts get more
     weight (decay rate lambda_). It is far less noise-amplified than the annualised figure,
     so it is the cleaner quantity for comparing forecast optimism across regimes.
+
+    lambda_=None (the default) scales the decay with the horizon via decay_lambda, so the
+    weights span the same fraction of the decode window at every horizon. A FIXED lambda_
+    does not, and that is a trap rather than a preference. Measured at H=54: a pinned 0.2
+    puts 63% of the weight in weeks 1-5 and leaves weeks 25-54 with 0.8%, so raising
+    periods_to_forecast from 24 to 54 would barely move the mu reaching the optimiser while
+    rank_ic_loss ranks the cumulative return over all 54 decode steps -- training for one
+    horizon and allocating on another. Scaled, those last 30 weeks carry 11%.
+    4.8/H reproduces the validated 0.2 exactly at H=24.
     """
     periods        = preds_df.shape[0]
+    lam            = decay_lambda(periods, lambda_)
     weight_indexes = np.arange(1, periods + 1)
-    exp_decay_w    = np.exp(-lambda_ * weight_indexes)
+    exp_decay_w    = np.exp(-lam * weight_indexes)
     exp_decay_w    = exp_decay_w / exp_decay_w.sum()
     return pd.Series({
         sym: float(np.sum(preds_df[sym].values * exp_decay_w))
@@ -483,7 +531,7 @@ def annualize_period_return(period_returns, periods_per_year):
     return (1 + period_returns) ** periods_per_year - 1
 
 
-def annualize_expected_returns(preds_df, periods_per_year, lambda_=0.2):
+def annualize_expected_returns(preds_df, periods_per_year, lambda_=None):
     """Exponential-decay-weighted annualised expected return per column of preds_df.
 
     Used by the train-universe comparison experiment and the report's display path.

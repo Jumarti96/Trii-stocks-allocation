@@ -33,3 +33,7 @@ data_*_backup/
 docs/superpowers/
 .worktrees/
 experiments/
+
+# Vendored agent skills and their lockfile. Local tooling, not project source.
+.agents/
+skills-lock.json

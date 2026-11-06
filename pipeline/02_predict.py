@@ -137,7 +137,10 @@ def main():
 
     # Per-period expected returns (exp-decay weighted). Annualisation is a DISPLAY
     # concern handled in step 5; the optimiser consumes these per-period values directly.
-    expected_returns = weighted_mean_return(preds_df)
+    # The decay rate follows the horizon unless forecast_decay_lambda pins it, so the
+    # weighted window tracks the horizon rank_ic trained on - see weighted_mean_return.
+    expected_returns = weighted_mean_return(
+        preds_df, lambda_=cfg.get('forecast_decay_lambda'))
 
     # Ledoit-Wolf covariance over the full universe
     covmat = pd.DataFrame(
