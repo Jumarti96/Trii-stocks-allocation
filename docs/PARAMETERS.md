@@ -7,7 +7,9 @@ Rules of thumb before the tables:
 
 - **Only `params.yaml` is loaded.** `pipeline/config.py::load_config` reads that one
   path. `params_trii_10y.yaml.disabled` is an inert snapshot — the suffix is what keeps
-  it from being picked up, the same convention as `stock_tickers/*.csv.inactive`.
+  it from being picked up, the same convention as `stock_tickers/*.csv.inactive`. It
+  exists because the defaults here are tuned for the global catalogue: the 15-year
+  `days_of_data` is wrong for the Trii book, which that snapshot runs at 10 years.
 - **Do not add derived keys.** `period_freq`, `date_offset`, `future_freq` and
   `rf_period` are computed in `load_config` (`config.py:134-139`). `time_window` is the
   exception: it must be *present* (a bare `cfg['time_window']` lookup) but may be `null`.
@@ -21,7 +23,7 @@ Rules of thumb before the tables:
 
 | Parameter | Default | Read by | Notes |
 |---|---|---|---|
-| `investment` | `120000000` | step 4 | Total capital, in `report_currency`. Renamed from `investment_cop`, which now **raises** (`config.py:104`). |
+| `investment` | `100000000` | step 4 | Total capital, in `report_currency`. Renamed from `investment_cop`, which now **raises** (`config.py:104`). |
 | `report_currency` | `COP` | step 4 | 3-letter ISO, upper-cased on load. Prices, amounts and share counts are converted into it. |
 | `rf_rate` | `0.11` | `config.py` → `rf_period`, step 4 | Risk-free rate **in `report_currency`** (0.11 = 10Y Colombian bond). Change it whenever you change the currency. |
 | `universe_topn` | `500` | step 2 | How many stocks the model forecasts, ranked by FX-normalised dollar volume. `null` disables. No-op if the catalogue is smaller. |
@@ -38,8 +40,9 @@ badly past that. At 300 the screen cut straight through the European large caps
 |---|---|---|---|
 | `periods_per_year` | `54` | steps 2-4, `rf_period` | 52 weekly, 12 monthly. |
 | `interval` | `"1wk"` | step 1 | `"1wk"` or `"1mo"`; also selects `period_freq`/`future_freq`. |
-| `days_of_data` | `5475` | step 1 | Download window. 15y. |
+| `days_of_data` | `4015` | step 1 | Download window, ≈573 weekly periods. 5y=1825, 10y=3650, 15y=5475. |
 | `periods_to_forecast` | `24` | steps 2, 4 | Forecast horizon. **Must equal `transformer_forecast_window` when `transformer_loss: rank_ic`.** |
+| `forecast_decay_lambda` | `null` | step 2 | Decay rate of the weights collapsing the forecast into `mu`. `null` → `4.8/periods_to_forecast` (the validated `0.2` at H=24), so the weighted window tracks the horizon. Pin it only to reproduce an older run. |
 
 **`days_of_data` is the second parameter that changed results, and it has a trap.**
 `clean_batch` drops any name missing more than 15% of the window (`missing_frac=0.15`,
@@ -48,6 +51,30 @@ not configurable), so a longer window silently deletes younger companies. Measur
 entire post-2009 IPO cohort. 15y keeps TSLA (2010) and META (2012) and loses only
 post-2013 listings. Longer calendar buys walk-forward windows (13 → 20 → 30) but worsens
 survivorship bias.
+
+Those window counts were measured at cadence 24 on a 15-year window (5475 days, 782 weekly
+periods), and they are not portable across horizons: the same panel gives 20 windows at
+cadence 24 but only **8 at cadence 54**, where targets also overlap 53/54, leaving roughly
+14 independent windows. The horizon spends statistical power as surely as the calendar
+does.
+
+Both ends of `days_of_data` cost something, and the current 4015-day default (~573
+periods, 11 walk-forward windows at cadence 24 and `min_train` 300) sits between them.
+A longer calendar worsens survivorship, as above. A shorter one cuts training samples for
+a model whose parameter count is fixed by `universe_topn` and
+`transformer_forecast_window`, pushing `capacity_report` toward its ceiling. At
+`universe_topn: 500` and a 24-step decode window:
+
+| `days_of_data` | samples | params/sample | verdict |
+|---|---|---|---|
+| 5475 | 705 | 3,130 | `ok` |
+| **4015** | 496 | 4,449 | `warn` |
+| 3650 | 444 | 4,971 | `warn` |
+| 1825 | 183 | 12,060 | `error` — step 2 refuses to run |
+
+Those are universe-size-dependent: at 128 names the same 4015-day window is 2,031
+params-per-sample and `ok`. Widening the decode window moves every row — at a 54-step
+window, 4015 days is ~8,900 and 3650 days crosses into `error`.
 
 ## Universe screen (step 2)
 
@@ -58,7 +85,7 @@ Never screen on past returns — see `src/data_intake.select_universe` for why.
 |---|---|---|
 | `universe_strata` | `null` | `null` = pure top-N (mega-caps only at scale). A list spreads the budget over equal liquidity bands, e.g. `[200, 60, 40]`. **Must sum exactly to `universe_topn`** (`config.py:90`). |
 | `universe_price_floor` | `0.0` | Drop prices below this, in listing currency. Unvalidated. |
-| `universe_min_market_cap` | `null` | Size floor **in USD**; caps are converted out of the listing currency first. ETFs report no cap and are **kept**, not dropped. |
+| `universe_min_market_cap` | `null` | Size floor **in USD**; caps are converted out of the listing currency first. Free to enable — step 1's `.info` pass already captures `market_cap`. ETFs report no cap and are **kept**, not dropped. |
 | `unknown_currency` | `exclude` | `exclude` \| `assume_target`. What to do with a stock whose quote currency will not resolve. |
 
 `exclude` is the right default: guessing is how a JPY-quoted name gets ranked ~150× too
@@ -73,7 +100,7 @@ a visible gap for an invisible error.
 | `allocation_ranking` | `sharpe` | `sharpe` ranks by **mu/σ** — the forecast return divided by that stock's own volatility (covariance *diagonal* only, so correlations are ignored). `return` ranks by raw mu. Used by `allocation_top_n` and by `equal_weight_topn`. This per-stock score is **not** the portfolio Sharpe that `msr`/`parametric_michaud` maximise, which does use the full covariance. |
 | `allocation_method` | `parametric_michaud` | See the table below. |
 | `equal_weight_n` | *commented out*; defaults to `1/min_weight` = 20 | Names held by `equal_weight_topn`, `momentum` and `random`. The comment in `params.yaml` historically claimed 12; the real default is 20. |
-| `momentum_lookback` | `24` | Periods of trailing return that `momentum` ranks on. |
+| `momentum_lookback` | `24` | Periods of trailing return that `momentum` ranks on. Read only by `allocation_method: momentum`; inert under `parametric_michaud`. |
 | `michaud_spread` | `2.0` | Draw scale `s` on `Σ/T`. |
 | `michaud_mc_draws` | `1000` | Monte-Carlo draws. The dominant cost of a Michaud run. |
 | `michaud_seed` | `0` | `int` = reproducible; `null` = fresh draws. Also seeds `random`. |
@@ -117,8 +144,8 @@ Calibrated defaults. Do not change the transformer block without reading
 |---|---|---|
 | `transformer_arch` | `B` | `current` (autoregressive) \| `B` (direct multi-step). |
 | `transformer_loss` | `rank_ic` | `rank_ic` \| `auto` (legacy MSE/Huber). Validated against that set. |
-| `transformer_forecast_window` | `24` | Decode length; `null` → `periods_per_year`. Must be `>= periods_to_forecast` for `B*` archs. |
-| `n_transformer_runs` | `150` | Independent runs, averaged. Linear in training time. |
+| `transformer_forecast_window` | `24` | Decode length; `null` → `periods_per_year`. Must be `>= periods_to_forecast` for `B*` archs. Parameters scale linearly in it (`output_proj` is `Linear(128, n_stocks * decode_steps)`), so it drives the `capacity_report` verdict as hard as `universe_topn` does. |
+| `n_transformer_runs` | `150` | Independent runs, averaged. Linear in training time. 150 comes from a convergence study (run `3096393`). |
 | `time_window` | `null` | Input sequence length; `null` → `periods_per_year`. **Key must exist**, value may be null. |
 | `transformer_epochs` | `50` | Epochs per run. |
 | `transformer_warmup_epochs` | `5` | LR linear-warmup epochs. |
@@ -167,7 +194,7 @@ will silently optimise a horizon production never consumes.
 | Constant | Where | Why it matters |
 |---|---|---|
 | `missing_frac=0.15` | `data_intake.clean_batch` | Decides which names survive a long `days_of_data`. The reason a 20-year window drops TSLA and META. |
-| `lambda_=0.2` | `transformer_model.weighted_mean_return` | Exponential decay collapsing the forecast path into a single expected return. |
+| `DECAY_WEIGHT_SPAN = 4.8` | `transformer_model` | `lambda_ * horizon` at the validated configuration (`0.2` at H=24). Fixes the *shape* of the forecast-collapsing weights; the rate itself is `forecast_decay_lambda`. |
 | `CAPACITY_WARN` / `CAPACITY_ERROR` | `transformer_model` | 4,000 / 10,000 params-per-sample. Step 2 refuses to run on `error`. |
 | `MOMENTUM_LOOKBACK`, `MIN_TRAIN`, `COST_ROUND_TRIP`, `N_RANDOM` | `experiments/backtest_isin.py` | Backtest-only; `MIN_TRAIN` is exposed as `--min-train`. |
 
